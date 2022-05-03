@@ -1,0 +1,8 @@
++1 Correctly implemented thing 1
++2 Correctly implemented thing 2
++3 Correctly implemented thing 3
++2 Correctly implemented thing 4
+=================================
+0 No hope for this one
+5 Halfway there
+9 Basically correct
