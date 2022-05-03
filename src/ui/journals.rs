@@ -161,6 +161,7 @@ pub fn tick_app(app: &mut App<'_>, io_event: Option<Event>) -> Result<()> {
                 _ => {}
             }
         }
+        AppState::Journals(_) => {}
         _ => unreachable!(),
     }
     
