@@ -7,7 +7,7 @@ use tokio::{task::{JoinHandle, self}, sync::oneshot};
 use tui::{backend::Backend, Frame, widgets::{Borders, Block, Paragraph}, layout::{Constraint, Direction, Layout}, style::{Style, Color}};
 use tui_input::{Input, backend::crossterm as tui_input_crossterm, InputResponse};
 
-use super::{App, AppState, UiTickers, assignments::AssignmentsState};
+use super::{App, AppState, UiTickers, assignments::AssignmentsState, BasicAuth};
 
 pub enum AuthenticatingState {
     EnteringZid { zid_input: Input, },
@@ -19,7 +19,7 @@ pub enum AuthenticatingState {
 
 #[derive(Debug)]
 pub enum AuthTaskOutput {
-    Success { assignments: Vec<String> },
+    Success { assignments: Vec<String>, zid: String, password: String, },
     Failure { failure: anyhow::Error },
 }
 
@@ -28,7 +28,8 @@ pub fn tick_app(app: &mut App<'_>, io_event: Option<Event>) -> Result<()> {
         AppState::Authenticating(AuthenticatingState::AuthenticationWaiting { output }) => {
             if let Ok(response) = output.try_recv() {
                 match response {
-                    AuthTaskOutput::Success { assignments } => {
+                    AuthTaskOutput::Success { assignments, zid, password } => {
+                        app.auth  = Some(BasicAuth::new(zid, password));
                         app.state = AppState::Choosing(AssignmentsState::new(assignments));
                     }
                     AuthTaskOutput::Failure { failure } => {
@@ -105,18 +106,18 @@ async fn do_auth(sender: oneshot::Sender<AuthTaskOutput>, imark_endpoint: String
     let body = || async {
         let client = reqwest::Client::new();
         let resp: Vec<String> = client.request(Method::GET, format!("{imark_endpoint}/api/v1/assignments/"))
-            .basic_auth(zid, Some(password))
+            .basic_auth(&zid, Some(&password))
             .send()
             .await?
             .json()
-            .await?;        
+            .await?;
 
         anyhow::Ok(resp)
     };
 
     sender.send(
         match body().await {
-            Ok(body) => AuthTaskOutput::Success { assignments: body },
+            Ok(body) => AuthTaskOutput::Success { assignments: body, zid, password },
             Err(err) => AuthTaskOutput::Failure { failure: err },
         }
     ).expect("receiver should not drop before sending");

@@ -5,7 +5,7 @@ pub struct Choices {
     pub choices: Vec<Choice>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum Choice {
     Plus (u32, String),
     Minus(u32, String),

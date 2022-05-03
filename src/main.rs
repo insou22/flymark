@@ -4,8 +4,8 @@ mod tmux;
 mod choices;
 mod ui;
 
-use anyhow::{Result, Context};
-use choices::Choices;
+use anyhow::{Result, Context, bail};
+use choices::{Choices, Choice};
 use clap::Parser;
 use tempfile::TempDir;
 use tokio::{fs::File, io::AsyncReadExt};
@@ -36,10 +36,10 @@ async fn main() -> Result<()> {
         .with_context(|| format!("Failed to read scheme file: {}", args.scheme))?;
 
     let tmux_session = tmux::get_tmux_session().await
-        .with_context(|| format!("Failed to locate current tmux session"))?;
+        .context("Failed to locate current tmux session")?;
     
     let work_dir = move_to_work_dir()
-        .with_context(|| format!("Failed to create temporary work directory"))?;
+        .context("Failed to create temporary work directory")?;
 
     let launch_params = AppParams::new(&args, &endpoint, &choices, &tmux_session, &work_dir);
     ui::launch_ui(launch_params).await?;
@@ -66,6 +66,13 @@ async fn get_choices(scheme: &str) -> Result<Choices> {
     file.read_to_string(&mut contents).await?;
 
     let choices = choices::parse_choices(&contents)?;
+
+    let real_choice = choices.choices.iter()
+        .find(|choice| !matches!(choice, Choice::Comment(_)));
+    
+    if real_choice.is_none() {
+        bail!("Choice file must contain at least one *actual* choice");
+    }
 
     Ok(choices)
 }

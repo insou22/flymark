@@ -2,22 +2,23 @@ mod auth;
 mod term;
 mod assignments;
 mod journals;
+mod marking;
 
-use std::time::Duration;
+use std::{time::Duration, process::Command};
 
 use anyhow::{Result, anyhow};
 use crossterm::{event::{EventStream, Event, KeyCode, KeyModifiers}};
 use futures::{StreamExt, FutureExt};
 use futures_timer::Delay;
 use tempfile::TempDir;
-use tmux_interface::Session;
+use tmux_interface::{Session, KillPane};
 use tokio::select;
 use tui::{Terminal, backend::{CrosstermBackend, Backend}, Frame};
 use tui_input::Input;
 
 use crate::{Args, choices::Choices};
 
-use self::{auth::AuthenticatingState, term::TerminalSettings, assignments::AssignmentsState, journals::JournalsState};
+use self::{auth::AuthenticatingState, term::TerminalSettings, assignments::AssignmentsState, journals::{JournalsState, Journal}, marking::MarkingState};
 
 pub struct AppParams<'a> {
     args:         &'a Args,
@@ -50,6 +51,8 @@ pub async fn launch_ui(params: AppParams<'_>) -> Result<()> {
 
     let app = App {
         params,
+        auth: None,
+        side_pane_id: None,
         state: AppState::Authenticating(AuthenticatingState::EnteringZid { zid_input: Input::default() }),
     };
 
@@ -60,13 +63,49 @@ pub async fn launch_ui(params: AppParams<'_>) -> Result<()> {
 
 pub struct App<'a> {
     params: AppParams<'a>,
+    auth:  Option<BasicAuth>,
+    side_pane_id: Option<String>,
     state: AppState,
+}
+
+impl Drop for App<'_> {
+    fn drop(&mut self) {
+        if let Some(side_pane_id) = self.side_pane_id.as_ref() {
+            let _ = KillPane::new()
+                .target_pane(side_pane_id)
+                .output();
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BasicAuth {
+    username: String,
+    password: String,
+}
+
+impl BasicAuth {
+    pub fn new(username: String, password: String) -> Self {
+        Self {
+            username,
+            password,
+        }
+    }
+
+    pub fn username(&self) -> &str {
+        &self.username
+    }
+
+    pub fn password(&self) -> &str {
+        &self.password
+    }
 }
 
 pub enum AppState {
     Authenticating(AuthenticatingState),
     Choosing(AssignmentsState),
     Journals(JournalsState),
+    Marking(Vec<Journal>, MarkingState),
 }
 
 #[derive(Default)]
@@ -90,6 +129,7 @@ pub async fn launch_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App<'_>
                 Some(event)
             }
         };
+        
         if let Some(event) = event {
             if should_quit(event) {
                 break;
@@ -105,6 +145,9 @@ pub async fn launch_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App<'_>
             }
             AppState::Journals(_) => {
                 journals::tick_app(&mut app, event)?;
+            }
+            AppState::Marking(_, _) => {
+                marking::tick_app(&mut app, event).await?;
             }
         }
 
@@ -124,6 +167,9 @@ pub fn draw<B: Backend>(frame: &mut Frame<B>, app: &mut App, tickers: &mut UiTic
         }
         AppState::Journals(_) => {
             journals::draw(frame, app, tickers);
+        }
+        AppState::Marking(_, _) => {
+            marking::draw(frame, app, tickers);
         }
     }
 }

@@ -55,7 +55,10 @@ pub fn tick_app(app: &mut App<'_>, io_event: Option<Event>) -> Result<()> {
                             ));
                         }
                         KeyCode::Enter => {
-                            app.state = AppState::Journals(JournalsState::new());
+                            let current = list_state.selected().unwrap();
+                            let assignment = assignments[current].to_string();
+
+                            app.state = AppState::Journals(JournalsState::new(assignment));
                         }
                         _ => {}
                     }
