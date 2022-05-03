@@ -1,14 +1,15 @@
+#![allow(unused)]
+
 mod tmux;
 mod choices;
 mod ui;
 
-use std::io::Write;
 use anyhow::{Result, Context};
 use choices::Choices;
 use clap::Parser;
 use tempfile::TempDir;
 use tokio::{fs::File, io::AsyncReadExt};
-use ui::UiParams;
+use ui::AppParams;
 
 #[derive(Parser, Debug)]
 #[clap(version)]
@@ -40,11 +41,8 @@ async fn main() -> Result<()> {
     let work_dir = move_to_work_dir()
         .with_context(|| format!("Failed to create temporary work directory"))?;
 
-    let launch_params = UiParams::new(&args, &endpoint, &choices, &tmux_session, &work_dir);
+    let launch_params = AppParams::new(&args, &endpoint, &choices, &tmux_session, &work_dir);
     ui::launch_ui(launch_params).await?;
-
-    // let auth = authenticate()
-    //     .with_context(|| format!("Failed to read from stdin to authenticate"))?;
 
     Ok(())
 }
@@ -77,22 +75,4 @@ fn move_to_work_dir() -> Result<TempDir> {
     std::env::set_current_dir(&work_dir)?;
     
     Ok(work_dir)
-}
-
-struct Auth {
-    username: String,
-    password: String,
-}
-
-fn authenticate() -> Result<Auth> {
-    print!("Enter your zID: ");
-    std::io::stdout().flush()?;
-    
-    let mut username = String::new();
-    std::io::stdin().read_line(&mut username)?;
-    let username = username.trim().to_string();
-
-    let password = rpassword::prompt_password("Enter your zPass: ")?;
-
-    Ok(Auth { username, password })
 }

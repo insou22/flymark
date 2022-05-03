@@ -1,17 +1,25 @@
-use std::{time::Duration, mem};
+mod auth;
+mod term;
+mod assignments;
+mod journals;
+
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
-use crossterm::{terminal::{enable_raw_mode, EnterAlternateScreen, disable_raw_mode, LeaveAlternateScreen}, execute, event::{EnableMouseCapture, DisableMouseCapture, self, EventStream, Event, KeyEvent, KeyCode, KeyModifiers}};
+use crossterm::{event::{EventStream, Event, KeyCode, KeyModifiers}};
 use futures::{StreamExt, FutureExt};
 use futures_timer::Delay;
 use tempfile::TempDir;
 use tmux_interface::Session;
-use tokio::{time::sleep, select};
-use tui::{Terminal, backend::{CrosstermBackend, Backend}, widgets::{Block, Borders}, Frame};
+use tokio::select;
+use tui::{Terminal, backend::{CrosstermBackend, Backend}, Frame};
+use tui_input::Input;
 
 use crate::{Args, choices::Choices};
 
-pub struct UiParams<'a> {
+use self::{auth::AuthenticatingState, term::TerminalSettings, assignments::AssignmentsState, journals::JournalsState};
+
+pub struct AppParams<'a> {
     args:         &'a Args,
     endpoint:     &'a str,
     choices:      &'a Choices,
@@ -19,7 +27,7 @@ pub struct UiParams<'a> {
     work_dir:     &'a TempDir,
 }
 
-impl<'a> UiParams<'a> {
+impl<'a> AppParams<'a> {
     pub fn new(
         args:         &'a Args,
         endpoint:     &'a str,
@@ -37,86 +45,87 @@ impl<'a> UiParams<'a> {
     }
 }
 
+pub async fn launch_ui(params: AppParams<'_>) -> Result<()> {
+    let mut terminal = TerminalSettings::mangle_terminal(std::io::stdout(), CrosstermBackend::new)?;
+
+    let app = App {
+        params,
+        state: AppState::Authenticating(AuthenticatingState::EnteringZid { zid_input: Input::default() }),
+    };
+
+    launch_app(terminal.terminal_mut(), app).await?;
+
+    Ok(())
+}
+
 pub struct App<'a> {
-    params: UiParams<'a>,
+    params: AppParams<'a>,
     state: AppState,
 }
 
-enum AppState {
+pub enum AppState {
     Authenticating(AuthenticatingState),
+    Choosing(AssignmentsState),
+    Journals(JournalsState),
 }
 
-enum AuthenticatingState {
-    EnteringZid { current_zid: String, },
-    EnteringPassword { zid: String, current_password: String, },
-    Authenticated { zid: String, password: String },
+#[derive(Default)]
+pub struct UiTickers {
+    auth_loading: usize,
 }
 
 pub async fn launch_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App<'_>) -> Result<()> {
+    let mut ui_tickers   = UiTickers::default();
     let mut event_reader = EventStream::new();
 
     loop {
-        let timeout = Delay::new(Duration::from_millis(100)).fuse();
+        let timeout = Delay::new(Duration::from_millis(10)).fuse();
         let event   = event_reader.next().fuse();
 
-        select! {
-            _     = timeout => {},
+        let event = select! {
+            _     = timeout => None,
             event = event   => {
                 let event: Result<_> = event.ok_or(anyhow!("Couldn't read input from terminal")).into();
                 let event = event??;
-                
-                if should_quit(event) {
-                    break;
-                }
-
-                match &mut app.state {
-                    AppState::Authenticating(state) => {
-                        match state {
-                            AuthenticatingState::EnteringZid { current_zid: curr_buf }
-                            | AuthenticatingState::EnteringPassword { zid: _, current_password: curr_buf } => {
-                                match event {
-                                    Event::Key(
-                                        KeyEvent { code: KeyCode::Char(char), modifiers: KeyModifiers::NONE }
-                                    ) => {
-                                        curr_buf.push(char);
-                                    }
-                                    Event::Key(
-                                        KeyEvent { code: KeyCode::Enter, modifiers: KeyModifiers::NONE }
-                                    ) => {
-                                        match state {
-                                            AuthenticatingState::EnteringZid { current_zid } => {
-                                                let zid = mem::take(current_zid);
-                                                *state = AuthenticatingState::EnteringPassword { zid, current_password: String::new() };
-                                            }
-                                            AuthenticatingState::EnteringPassword { zid, current_password } => {
-                                                let zid = mem::take(zid);
-                                                let password = mem::take(current_password);
-                                                *state = AuthenticatingState::Authenticated { zid, password };
-                                            }
-                                            _ => unreachable!("cases covered above"),
-                                        }
-                                    }
-                                    Event::Key(
-                                        KeyEvent { code: KeyCode::Backspace, modifiers: KeyModifiers::NONE }
-                                    ) => {
-                                        curr_buf.pop();
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            AuthenticatingState::Authenticated { zid, password } => {
-
-                            }
-                        }
-                    }
-                }
+                Some(event)
+            }
+        };
+        if let Some(event) = event {
+            if should_quit(event) {
+                break;
             }
         }
 
-        terminal.draw(|f| draw(f, &app))?;
+        match &mut app.state {
+            AppState::Authenticating(_) => {
+                auth::tick_app(&mut app, event)?;
+            }
+            AppState::Choosing(_) => {
+                assignments::tick_app(&mut app, event)?;
+            }
+            AppState::Journals(_) => {
+                journals::tick_app(&mut app, event)?;
+            }
+        }
+
+        terminal.draw(|f| draw(f, &mut app, &mut ui_tickers))?;
     }
 
     Ok(())
+}
+
+pub fn draw<B: Backend>(frame: &mut Frame<B>, app: &mut App, tickers: &mut UiTickers) {
+    match &app.state {
+        AppState::Authenticating(_) => {
+            auth::draw(frame, app, tickers);
+        }
+        AppState::Choosing(_) => {
+            assignments::draw(frame, app, tickers);
+        }
+        AppState::Journals(_) => {
+            journals::draw(frame, app, tickers);
+        }
+    }
 }
 
 fn should_quit(event: Event) -> bool {
@@ -125,9 +134,9 @@ fn should_quit(event: Event) -> bool {
             let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
 
             match key.code {
-                KeyCode::Char('q') => {
-                    return true;
-                }
+                // KeyCode::Char('q') => {
+                //     return true;
+                // }
                 KeyCode::Char('c') if ctrl => {
                     return true;
                 }
@@ -138,50 +147,4 @@ fn should_quit(event: Event) -> bool {
     }
 
     false
-}
-
-pub fn draw<B: Backend>(frame: &mut Frame<B>, app: &App) {
-    match &app.state {
-        AppState::Authenticating(state) => {
-            let size = frame.size();
-            let block = Block::default()
-                .title("Authenticate")
-                .borders(Borders::ALL);
-                frame.render_widget(block, size);
-
-            let zid = 
-
-            match state {
-                AuthenticatingState::EnteringZid { current_zid } => {
-
-                }
-                AuthenticatingState::EnteringPassword { zid, current_password } => {
-
-                }
-                AuthenticatingState::Authenticated { zid, password } => {
-
-                }
-            }
-        }
-    }
-}
-
-pub async fn launch_ui(params: UiParams<'_>) -> Result<()> {
-    enable_raw_mode()?;
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
-    
-    let app = App {
-        params,
-        state: AppState::Authenticating(AuthenticatingState::EnteringZid { current_zid: String::new() }),
-    };
-
-    launch_app(&mut terminal, app).await?;
-
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
-    terminal.show_cursor()?;
-
-    Ok(())
 }
