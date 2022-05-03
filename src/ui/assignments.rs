@@ -1,6 +1,6 @@
 use anyhow::Result;
-use crossterm::event::{Event, KeyEvent, KeyCode};
-use tui::{Frame, backend::Backend, layout::{Layout, Direction, Constraint, Alignment}, widgets::{Paragraph, Block, Borders, List, ListItem, ListState}, style::{Style, Color, Modifier}};
+use crossterm::event::{Event, KeyCode};
+use tui::{Frame, backend::Backend, widgets::{Block, Borders, List, ListItem, ListState}, style::{Style, Color, Modifier}};
 
 use super::{App, UiTickers, AppState, journals::JournalsState};
 
@@ -72,7 +72,7 @@ pub fn tick_app(app: &mut App<'_>, io_event: Option<Event>) -> Result<()> {
     Ok(())
 }
 
-pub fn draw<B: Backend>(frame: &mut Frame<B>, app: &mut App, tickers: &mut UiTickers) {
+pub fn draw<B: Backend>(frame: &mut Frame<B>, app: &mut App, _tickers: &mut UiTickers) {
     match &mut app.state {
         AppState::Choosing(AssignmentsState::ChoosingAssignment { assignments, list_state }) => {
             let size = frame.size();

@@ -3,7 +3,7 @@ use std::mem;
 use anyhow::{Result, Context};
 use crossterm::event::Event;
 use reqwest::Method;
-use tokio::{task::{JoinHandle, self}, sync::oneshot};
+use tokio::{task, sync::oneshot};
 use tui::{backend::Backend, Frame, widgets::{Borders, Block, Paragraph}, layout::{Constraint, Direction, Layout}, style::{Style, Color}};
 use tui_input::{Input, backend::crossterm as tui_input_crossterm, InputResponse};
 
@@ -14,7 +14,7 @@ pub enum AuthenticatingState {
     EnteringPassword { zid: String, password_input: Input, },
     AuthenticationReady { zid: String, password: String },
     AuthenticationWaiting { output: oneshot::Receiver<AuthTaskOutput> },
-    AuthenticationFailed,
+    // AuthenticationFailed,
 }
 
 #[derive(Debug)]
@@ -77,7 +77,7 @@ pub fn tick_app(app: &mut App<'_>, io_event: Option<Event>) -> Result<()> {
                 }
                 AuthenticatingState::AuthenticationReady   { .. } => {}
                 AuthenticatingState::AuthenticationWaiting { .. } => {}
-                AuthenticatingState::AuthenticationFailed => {}
+                // AuthenticatingState::AuthenticationFailed => {}
             }
 
             match state {
@@ -245,9 +245,7 @@ pub fn draw<B: Backend>(frame: &mut Frame<B>, app: &mut App, tickers: &mut UiTic
                     frame.render_widget(loading, chunks[1]);
                     tickers.auth_loading = tickers.auth_loading.wrapping_add(1);
                 }
-                AuthenticatingState::AuthenticationFailed => {
-
-                }
+                // AuthenticatingState::AuthenticationFailed => {}
             }
         }
         _ => {}

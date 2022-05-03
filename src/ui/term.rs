@@ -25,10 +25,6 @@ impl<B: Backend + Write> TerminalSettings<B> {
         )
     }
 
-    pub fn terminal(&self) -> &Terminal<B> {
-        &self.terminal
-    }
-
     pub fn terminal_mut(&mut self) -> &mut Terminal<B> {
         &mut self.terminal
     }

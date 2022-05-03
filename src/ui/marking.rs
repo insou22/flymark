@@ -1,4 +1,4 @@
-use std::{mem, collections::BTreeMap, io::Write, os::unix::prelude::AsRawFd, process, env::current_dir, time::Duration, path::Path};
+use std::{collections::BTreeMap, io::Write, os::unix::prelude::AsRawFd, process, path::Path};
 
 use anyhow::{anyhow, Result, Context};
 use crossterm::event::{Event, KeyCode};
@@ -6,13 +6,12 @@ use memfile::{MemFile, CreateOptions, Seal};
 use reqwest::Method;
 use serde::Deserialize;
 use tmux_interface::{SplitWindow, RespawnPane};
-use tokio::{task::{JoinHandle, self}, sync::oneshot, fs::{symlink, remove_file}, time::sleep};
-use tui::{backend::Backend, Frame, widgets::{Borders, Block, Paragraph, ListState, ListItem, List}, layout::{Constraint, Direction, Layout}, style::{Style, Color, Modifier}, text::Span};
-use tui_input::{Input, backend::crossterm as tui_input_crossterm, InputResponse};
+use tokio::{sync::oneshot, fs::{symlink, remove_file}};
+use tui::{backend::Backend, Frame, widgets::{Borders, Block, Paragraph, ListState, ListItem, List}, layout::{Constraint, Direction, Layout}, style::{Style, Color}, text::Span};
 
-use crate::{tmux, choices::Choice};
+use crate::choices::Choice;
 
-use super::{App, AppState, UiTickers, assignments::AssignmentsState, BasicAuth, journals::{Journal, JournalDetails, JournalsTaskOutput, JournalDetailsData}};
+use super::{App, AppState, UiTickers, BasicAuth, journals::{Journal, JournalDetails, JournalDetailsData}};
 
 pub enum MarkingState {
     ReadyToLoad    { journal_index: usize },
@@ -34,7 +33,7 @@ pub async fn tick_app(app: &mut App<'_>, io_event: Option<Event>) -> Result<()> 
         AppState::Marking(journals, mark_state @ MarkingState::ReadyToLoad { .. }) => {
             // this should be mark_state @ MarkingState::ReadyToLoad { journal_index }
             // fucking borrowck
-            let (journal_index) = match mark_state {
+            let journal_index = match mark_state {
                 MarkingState::ReadyToLoad { journal_index } => journal_index,
                 _ => unreachable!(),
             };
@@ -53,7 +52,7 @@ pub async fn tick_app(app: &mut App<'_>, io_event: Option<Event>) -> Result<()> 
                 channel: receiver,
             }
         }
-        AppState::Marking(journals, mark_state @ MarkingState::LoadingContent { .. }) => {
+        AppState::Marking(_journals, mark_state @ MarkingState::LoadingContent { .. }) => {
             // this should be mark_state @ MarkingState::LoadingContent { journal_index, channel }
             // fucking borrowck
             let (journal_index, channel) = match mark_state {
@@ -213,7 +212,7 @@ pub async fn tick_app(app: &mut App<'_>, io_event: Option<Event>) -> Result<()> 
     };
 
     match &mut app.state {
-        AppState::Marking(journals, mark_state @ MarkingState::Marking { .. }) => {
+        AppState::Marking(_journals, mark_state @ MarkingState::Marking { .. }) => {
             // fucking borrowck
             let (journal_index, list_state, choices) = match mark_state {
                 MarkingState::Marking { journal_index, list_state, choices, .. } => (*journal_index, list_state, choices),
@@ -328,7 +327,7 @@ async fn populate_journal(
     sender: Option<oneshot::Sender<MarkingTaskOutput>>,
     imark_endpoint: String,
     auth: BasicAuth,
-    mut journal: Journal,
+    journal: Journal,
 ) {
     {
         let mut details = journal.details.lock();
@@ -337,13 +336,13 @@ async fn populate_journal(
             JournalDetails::Loaded(_) => {
                 if let Some(sender) = sender {
                     // take credit for their work
-                    sender.send(MarkingTaskOutput::Success);
+                    sender.send(MarkingTaskOutput::Success).unwrap();
                 }
                 return;
             }
             JournalDetails::Loading => {
                 if let Some(sender) = sender {
-                    sender.send(MarkingTaskOutput::AlreadyInProgress);
+                    sender.send(MarkingTaskOutput::AlreadyInProgress).unwrap();
                 }
                 return;
             }
@@ -372,7 +371,7 @@ async fn populate_journal(
         let mut submission_files = vec![];
         let mut marking_files    = vec![];
 
-        for (imark_name, file) in resp.files {
+        for (_imark_name, file) in resp.files {
             let mut mem_file = MemFile::create("memfile", CreateOptions::new().allow_sealing(true))?;
             mem_file.write_all(file.contents.as_bytes())?;
             mem_file.add_seals(Seal::Write | Seal::Shrink | Seal::Grow)?;
@@ -380,12 +379,12 @@ async fn populate_journal(
             submission_files.push((file.name, mem_file));
         }
 
-        for (imark_name, file) in resp.marks {
+        for (_imark_name, file) in resp.marks {
             let mut mem_file = MemFile::create("memfile", CreateOptions::new().allow_sealing(true))?;
             mem_file.write_all(file.text.as_bytes())?;
             mem_file.add_seals(Seal::Write | Seal::Shrink | Seal::Grow)?;
 
-            submission_files.push((file.name, mem_file));
+            marking_files.push((file.name, mem_file));
         }
 
         let details_data = JournalDetailsData {
@@ -413,7 +412,7 @@ async fn populate_journal(
     } else {
         match result {
             Ok(_) => {}
-            Err(err) => {
+            Err(_) => {
                 {
                     // let someone else run into it
                     let mut details = journal.details.lock();
@@ -426,7 +425,7 @@ async fn populate_journal(
 
 pub fn draw<B: Backend>(frame: &mut Frame<B>, app: &mut App, tickers: &mut UiTickers) {
     match &mut app.state {
-        AppState::Marking(journals, MarkingState::Marking { journal_index, list_state, choices, .. }) => {
+        AppState::Marking(_journals, MarkingState::Marking { journal_index: _, list_state, choices }) => {
             let size = frame.size();
 
             const INFO_HEIGHT: u16 = 3;
@@ -495,7 +494,7 @@ pub fn draw<B: Backend>(frame: &mut Frame<B>, app: &mut App, tickers: &mut UiTic
 
             frame.render_stateful_widget(list, chunks[2], list_state);
         }
-        AppState::Marking(journals, _) => {
+        AppState::Marking(_journals, _) => {
             let size = frame.size();
 
             const INPUT_HEIGHT: u16 = 1;

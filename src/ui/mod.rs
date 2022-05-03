@@ -4,14 +4,14 @@ mod assignments;
 mod journals;
 mod marking;
 
-use std::{time::Duration, process::Command};
+use std::time::Duration;
 
 use anyhow::{Result, anyhow};
 use crossterm::{event::{EventStream, Event, KeyCode, KeyModifiers}};
 use futures::{StreamExt, FutureExt};
 use futures_timer::Delay;
 use tempfile::TempDir;
-use tmux_interface::{Session, KillPane};
+use tmux_interface::KillPane;
 use tokio::select;
 use tui::{Terminal, backend::{CrosstermBackend, Backend}, Frame};
 use tui_input::Input;
@@ -24,7 +24,6 @@ pub struct AppParams<'a> {
     args:         &'a Args,
     endpoint:     &'a str,
     choices:      &'a Choices,
-    tmux_session: &'a Session,
     work_dir:     &'a TempDir,
 }
 
@@ -33,14 +32,12 @@ impl<'a> AppParams<'a> {
         args:         &'a Args,
         endpoint:     &'a str,
         choices:      &'a Choices,
-        tmux_session: &'a Session,
         work_dir:     &'a TempDir,
     ) -> Self {
         Self {
             args,
             endpoint,
             choices,
-            tmux_session,
             work_dir,
         }
     }

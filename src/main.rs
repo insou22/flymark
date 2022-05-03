@@ -1,6 +1,5 @@
 #![allow(unused)]
 
-mod tmux;
 mod choices;
 mod ui;
 
@@ -35,13 +34,12 @@ async fn main() -> Result<()> {
     let choices  = get_choices(&args.scheme).await
         .with_context(|| format!("Failed to read scheme file: {}", args.scheme))?;
 
-    let tmux_session = tmux::get_tmux_session().await
-        .context("Failed to locate current tmux session")?;
-    
+    ensure_tmux()?;
+
     let work_dir = move_to_work_dir()
         .context("Failed to create temporary work directory")?;
 
-    let launch_params = AppParams::new(&args, &endpoint, &choices, &tmux_session, &work_dir);
+    let launch_params = AppParams::new(&args, &endpoint, &choices, &work_dir);
     ui::launch_ui(launch_params).await?;
 
     Ok(())
@@ -75,6 +73,14 @@ async fn get_choices(scheme: &str) -> Result<Choices> {
     }
 
     Ok(choices)
+}
+
+fn ensure_tmux() -> Result<()> {
+    if !std::env::vars().any(|(arg, _)| arg == "TMUX") {
+        return Err(anyhow::anyhow!("Not in tmux session (TMUX environment variable not set)"));
+    }
+
+    Ok(())
 }
 
 fn move_to_work_dir() -> Result<TempDir> {

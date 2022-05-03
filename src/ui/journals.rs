@@ -1,13 +1,13 @@
 use std::{mem, collections::BTreeMap, sync::{Arc}};
 
 use anyhow::{anyhow, Result, Context};
-use crossterm::event::{Event, KeyEvent, KeyCode};
+use crossterm::event::{Event, KeyCode};
 use memfile::MemFile;
 use parking_lot::Mutex;
 use reqwest::Method;
 use serde::Deserialize;
 use tokio::{sync::oneshot, task};
-use tui::{Frame, backend::Backend, layout::{Layout, Direction, Constraint, Alignment}, widgets::{Paragraph, Block, Borders, List, ListItem, ListState}, style::{Style, Color, Modifier}};
+use tui::{Frame, backend::Backend, layout::{Layout, Direction, Constraint}, widgets::{Paragraph, Block, Borders, List, ListItem, ListState}, style::{Style, Color, Modifier}};
 
 use super::{App, UiTickers, AppState, BasicAuth, marking::MarkingState};
 
@@ -152,8 +152,8 @@ pub fn tick_app(app: &mut App<'_>, io_event: Option<Event>) -> Result<()> {
                             let current = list_state.selected().unwrap();
                             app.state = AppState::Marking(
                                 mem::take(journals),
-                                MarkingState::ReadyToLoad { journal_index: list_state.selected().unwrap()
-                            });
+                                MarkingState::ReadyToLoad { journal_index: current }
+                            );
                         }
                         _ => {}
                     }
