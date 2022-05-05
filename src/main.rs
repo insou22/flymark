@@ -1,52 +1,66 @@
 #![allow(unused)]
 
-mod choices;
+mod app;
+mod choice;
+mod imark;
+mod term;
 mod ui;
+mod util;
 
-use anyhow::{Result, Context, bail};
-use choices::{Choices, Choice};
+use std::process::Stdio;
+
+use anyhow::{Result, bail, Context};
+use choice::{Choices, Choice};
 use clap::Parser;
+use imark::Globals;
 use tempfile::TempDir;
-use tokio::{fs::File, io::AsyncReadExt};
-use ui::AppParams;
+use tokio::{process::Command, fs::File, io::AsyncReadExt};
 
 #[derive(Parser, Debug)]
 #[clap(version)]
 pub struct Args {
-    /// The endpoint you will use for marking (overrides the course + session args)
+    /// The cgi endpoint you will use for marking (overrides the course + session args).
+    /// Generally not required.
+    #[clap(short('e'), long)]
+    cgi_endpoint: Option<String>,
+
+    /// Command to run the marking pager (default: tries to find bat, falls back to less)
     #[clap(short, long)]
-    endpoint: Option<String>,
+    pager_command: Option<String>,
 
     /// The path to the marking scheme you will use
     scheme: String,
 
-    /// Course
+    /// Course (format: cs1521)
     course: String,
 
-    /// Session
+    /// Session (format: 22T1)
     session: String,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let endpoint = get_endpoint(&args);
+    let cgi_endpoint = get_cgi_endpoint(&args);
     let choices  = get_choices(&args.scheme).await
         .with_context(|| format!("Failed to read scheme file: {}", args.scheme))?;
 
     ensure_tmux()?;
 
-    let work_dir = move_to_work_dir()
-        .context("Failed to create temporary work directory")?;
+    let pager_command = locate_pager(&args).await?;
 
-    let launch_params = AppParams::new(&args, &endpoint, &choices, &work_dir);
-    ui::launch_ui(launch_params).await?;
+    let _work_dir = move_to_work_dir()
+        .context("Failed to create temporary work directory")?;
+    
+    let globals = Globals::new(cgi_endpoint, pager_command, choices);
+    
+    ui::launch(globals).await?;
 
     Ok(())
 }
 
-fn get_endpoint(args: &Args) -> String {
-    args.endpoint
+fn get_cgi_endpoint(args: &Args) -> String {
+    args.cgi_endpoint
         .as_ref()
         .cloned()
         .unwrap_or_else(|| {
@@ -63,7 +77,7 @@ async fn get_choices(scheme: &str) -> Result<Choices> {
     let mut contents = String::new();
     file.read_to_string(&mut contents).await?;
 
-    let choices = choices::parse_choices(&contents)?;
+    let choices = choice::parse_choices(&contents)?;
 
     let real_choice = choices.choices.iter()
         .find(|choice| !matches!(choice, Choice::Comment(_)));
@@ -81,6 +95,50 @@ fn ensure_tmux() -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn locate_pager(args: &Args) -> Result<String> {
+    if let Some(pager) = args.pager_command.as_ref() {
+        return Ok(pager.to_string());
+    }
+
+    let have_6991_bat = Command::new("/home/cs6991/bin/bat")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .arg("--version")
+        .output()
+        .await
+        .is_ok();
+    
+    if have_6991_bat {
+        return Ok("/home/cs6991/bin/bat --paging=always".to_string());
+    }
+
+    let have_bat = Command::new("bat")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .arg("--version")
+        .output()
+        .await
+        .is_ok();
+    
+    if have_bat {
+        return Ok("bat --paging=always".to_string());
+    }
+    
+    let have_less = Command::new("less")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .arg("--version")
+        .output()
+        .await
+        .is_ok();
+
+    if have_less {
+        Ok("less".to_string())
+    } else {
+        bail!("Failed to find a pager -- please specify one with -p");
+    }
 }
 
 fn move_to_work_dir() -> Result<TempDir> {

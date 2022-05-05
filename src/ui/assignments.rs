@@ -1,105 +1,95 @@
-use anyhow::Result;
-use crossterm::event::{Event, KeyCode};
-use tui::{Frame, backend::Backend, widgets::{Block, Borders, List, ListItem, ListState}, style::{Style, Color, Modifier}};
+use std::{marker::PhantomData, num::Wrapping};
 
-use super::{App, UiTickers, AppState, journals::JournalsState};
+use tui::{Frame, backend::Backend, widgets::{ListItem, List, Block, Borders, ListState, Paragraph}, style::{Style, Color, Modifier}, layout::{Layout, Direction, Constraint}};
 
-pub enum AssignmentsState {
-    ChoosingAssignment { assignments: Vec<String>, list_state: ListState },
+use crate::app::{assignments::{AppPostAuth, AppPostAuthState}};
+
+use super::UiPage;
+
+pub struct AssignmentsUi<B> {
+    ticker: Wrapping<u32>,
+    _phantom: PhantomData<B>,
 }
 
-impl AssignmentsState {
-    pub fn new(assignments: Vec<String>) -> Self {
-        let mut list_state = ListState::default();
-        list_state.select(Some(0));
-        
-        Self::ChoosingAssignment {
-            assignments,
-            list_state,
+impl<B> AssignmentsUi<B> {
+    pub fn new() -> Self {
+        Self {
+            ticker: Wrapping(0),
+            _phantom: PhantomData,
         }
     }
 }
 
-pub fn tick_app(app: &mut App<'_>, io_event: Option<Event>) -> Result<()> {
-    let event = match io_event {
-        Some(event) => event,
-        None => return Ok(()),
-    };
+impl<B: Backend + Send + 'static> UiPage<B> for AssignmentsUi<B> {
+    type App = AppPostAuth<B>;
 
-    match &mut app.state {
-        AppState::Choosing(AssignmentsState::ChoosingAssignment { assignments, list_state }) => {
-            match event {
-                Event::Key(key) => {
-                    match key.code {
-                        KeyCode::Down  => {
-                            let current = list_state.selected().unwrap();
-                            
-                            list_state.select(Some(
-                                if current == assignments.len() - 1 {
-                                    0
-                                } else {
-                                    current + 1
-                                }
-                            ));
-                            
-                        }
-                        KeyCode::Up    => {
-                            let current = list_state.selected().unwrap();
-                            
-                            list_state.select(Some(
-                                if current == 0 {
-                                    assignments.len() - 1
-                                } else {
-                                    current - 1
-                                }
-                            ));
-                        }
-                        KeyCode::Enter => {
-                            let current = list_state.selected().unwrap();
-                            let assignment = assignments[current].to_string();
+    fn draw(&self, app: &Self::App, frame: &mut Frame<B>)
+    where
+        B: Backend,
+    {
+        match app.state() {
+            AppPostAuthState::SelectingAssignment => {
+                let size = frame.size();
+                
+                let list_items = app.assignments().iter()
+                    .map(|assignment| ListItem::new(assignment.as_str()))
+                    .collect::<Vec<_>>();
+    
+                let list = List::new(list_items)
+                    .block(
+                        Block::default()
+                            .title("Choose an assignment")
+                            .borders(Borders::ALL)
+                    )
+                    .style(Style::default().fg(Color::White))
+                    .highlight_style(Style::default().add_modifier(Modifier::ITALIC))
+                    .highlight_symbol(">> ");
+                
+                let mut list_state = ListState::default();
+                list_state.select(Some(app.current_assignment()));
 
-                            app.state = AppState::Journals(JournalsState::new(assignment));
-                        }
-                        _ => {}
-                    }
-                }
-                _ => {}
+                frame.render_stateful_widget(list, size, &mut list_state);
+            }
+            AppPostAuthState::LoadingJournals { .. } => {
+                let size = frame.size();
+
+                const INPUT_HEIGHT: u16 = 1;
+                const INPUT_WIDTH:  u16 = 10;
+
+                let chunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints(
+                        [
+                            Constraint::Length(size.width.saturating_sub(INPUT_WIDTH) / 2),
+                            Constraint::Length(INPUT_WIDTH + size.width % 2),
+                            Constraint::Length(size.width.saturating_sub(INPUT_WIDTH) / 2),
+                        ]
+                    )
+                    .split(size);
+
+                let chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints(
+                        [
+                            Constraint::Length(size.height.saturating_sub(INPUT_HEIGHT) / 2),
+                            Constraint::Length(INPUT_HEIGHT + size.height % 2),
+                            Constraint::Length(size.height.saturating_sub(INPUT_HEIGHT) / 2),
+                        ]
+                    )
+                    .split(chunks[1]);
+
+                let loading = Paragraph::new(String::from("Loading") + &".".repeat((self.ticker.0 as usize % 81) / 27 + 1))
+                    .block(
+                        Block::default()
+                        .borders(Borders::NONE)
+                    );
+                
+                frame.render_widget(loading, chunks[1]);
             }
         }
-        _ => unreachable!(),
     }
-    
-    Ok(())
-}
 
-pub fn draw<B: Backend>(frame: &mut Frame<B>, app: &mut App, _tickers: &mut UiTickers) {
-    match &mut app.state {
-        AppState::Choosing(AssignmentsState::ChoosingAssignment { assignments, list_state }) => {
-            let size = frame.size();
-            
-            let list_items = assignments.iter()
-                .map(|assignment| ListItem::new(assignment.as_str()))
-                .collect::<Vec<_>>();
-
-            let list = List::new(list_items)
-                .block(
-                    Block::default()
-                        .title("Choose an assignment")
-                        .borders(Borders::ALL)
-                )
-                .style(Style::default().fg(Color::White))
-                .highlight_style(Style::default().add_modifier(Modifier::ITALIC))
-                .highlight_symbol(">> ");
-
-            // let loading = Paragraph::new(String::from("Nice one!"))
-            //     .block(
-            //         Block::default()
-            //         .borders(Borders::NONE)
-            //     )
-            //     .alignment(Alignment::Left);
-            
-            frame.render_stateful_widget(list, size, list_state);
-        }
-        _ => unreachable!(),
+    fn update(&mut self) {
+        self.ticker += 1;
     }
 }

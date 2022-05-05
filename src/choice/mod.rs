@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct Choices {
     pub choices: Vec<Choice>,
 }
@@ -11,6 +11,58 @@ pub enum Choice {
     Minus(u32, String),
     Set  (u32, String),
     Comment(String),
+}
+
+pub struct ChoiceSelections {
+    selections: Vec<ChoiceSelection>,
+    cursor:     usize,
+}
+
+pub struct ChoiceSelection {
+    choice:     Choice,
+    selected:   bool,
+    real_index: usize,
+}
+
+impl ChoiceSelections {
+    pub fn new(choices: &Choices) -> Self {
+        Self {
+            selections: choices.choices.iter()
+                .enumerate()
+                .filter_map(|(index, choice)|
+                    match choice {
+                        Choice::Plus(_, _) | Choice::Minus(_, _) | Choice::Set(_, _) => {
+                            Some(ChoiceSelection {
+                                choice:     choice.clone(),
+                                selected:   false,
+                                real_index: index,
+                            })
+                        }
+                        Choice::Comment(_) => None,
+                    }
+                )
+                .collect(),
+            cursor: 0,
+        }
+    }
+
+    pub fn selections(&self) -> &[ChoiceSelection] {
+        &self.selections
+    }
+
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    pub fn real_cursor(&self) -> usize {
+        self.selections[self.cursor].real_index
+    }
+
+    pub fn from_real_index(&self, real_index: usize) -> Option<(usize, &ChoiceSelection)> {
+        self.selections.iter()
+            .enumerate()
+            .find(|(_, selection)| selection.real_index == real_index)
+    }
 }
 
 pub fn parse_choices(contents: &str) -> Result<Choices> {
