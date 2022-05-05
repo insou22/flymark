@@ -1,15 +1,20 @@
-use std::{collections::{HashMap, BTreeMap}, sync::Arc, cmp::Ordering, io::Write, mem};
+use std::{collections::{HashMap, BTreeMap}, sync::Arc, cmp::Ordering, io::{Write, Read, Seek}, mem};
 
 use anyhow::Result;
+use async_trait::async_trait;
 use memfile::{MemFile, CreateOptions, Seal};
 use reqwest::Method;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, oneshot, MutexGuard};
 
-use crate::{choice::Choices, app::{journals::AppJournalList, marking::AppMarking}};
+use crate::{choice::{Choices, ChoiceSelections, Choice}, app::{journals::AppJournalList, marking::AppMarking}, util::task::{TaskRunner, Task}};
 
-#[derive(Default)]
+#[derive(Clone)]
 pub struct Globals {
+    inner: Arc<GlobalsInner>,
+}
+
+struct GlobalsInner {
     cgi_endpoint:  String,
     pager_command: String,
     choices:       Choices,
@@ -18,27 +23,34 @@ pub struct Globals {
 impl Globals {
     pub fn new(cgi_endpoint: String, pager_command: String, choices: Choices) -> Self {
         Self {
-            cgi_endpoint,
-            pager_command,
-            choices,
+            inner: Arc::new(GlobalsInner {
+                cgi_endpoint,
+                pager_command,
+                choices
+            }),
         }
     }
 
     pub fn cgi_endpoint(&self) -> &str {
-        &self.cgi_endpoint
+        &self.inner.cgi_endpoint
     }
 
     pub fn pager_command(&self) -> &str {
-        &self.pager_command
+        &self.inner.pager_command
     }
 
     pub fn choices(&self) -> &Choices {
-        &self.choices
+        &self.inner.choices
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Authentication {
+    inner: Arc<AuthenticationInner>,
+}
+
+#[derive(Debug)]
+struct AuthenticationInner {
     username: String,
     password: String,
 }
@@ -46,25 +58,27 @@ pub struct Authentication {
 impl Authentication {
     pub fn new(username: String, password: String) -> Self {
         Self {
-            username,
-            password,
+            inner: Arc::new(AuthenticationInner {
+                username,
+                password,
+            }),
         }
     }
 
     pub fn username(&self) -> &str {
-        &self.username
+        &self.inner.username
     }
 
     pub fn password(&self) -> &str {
-        &self.password
+        &self.inner.password
     }
 }
 
 #[derive(Default)]
 pub struct Journals {
     database: HashMap<JournalTag, Arc<Mutex<Journal>>>,
-    ordering: Vec<JournalTag>,
-    queue: Vec<JournalLoadReceiver>,
+    ordering: Vec<(JournalTag, JournalMeta)>,
+    queue: Vec<Task<()>>,
 }
 
 pub struct JournalsIter<'a> {
@@ -76,7 +90,11 @@ impl<'a> Iterator for JournalsIter<'a> {
     type Item = (&'a JournalTag, Arc<Mutex<Journal>>);
 
     fn next(&mut self) -> Option<Self::Item> {
-        let tag = self.journals.ordering.get(self.index)?;
+        if self.index >= self.journals.database.len() {
+            return None;
+        }
+
+        let (tag, _) = self.journals.ordering.get(self.index)?;
         let journal = self.journals.database.get(tag)
             .expect("ordering is out of sync with database");
 
@@ -95,19 +113,27 @@ impl Journals {
         }
     }
 
-    pub fn iter(&self) -> JournalsIter<'_> {
+    pub fn iter(&self) -> impl Iterator<Item = (&'_ JournalTag, Arc<Mutex<Journal>>)> {
         JournalsIter {
             journals: self,
             index: 0,
         }
     }
 
-    pub fn insert(&mut self, tag: JournalTag, journal_meta: JournalMeta) {
-        self.database.insert(tag.clone(), Arc::new(Mutex::new(Journal::Unloaded(journal_meta))));
-        match self.ordering.binary_search(&tag) {
+    pub fn insert(&mut self, tag: JournalTag, meta: JournalMeta) {
+        self.database.insert(tag.clone(), Arc::new(Mutex::new(Journal::Unloaded(UnloadedJournal::new(meta.clone())))));
+        
+        match self.ordering.binary_search_by_key(&&meta, |(_, meta)| &meta) {
             Ok(index) | Err(index) => {
-                self.ordering.insert(index, tag);
+                self.ordering.insert(index, (tag, meta));
             }
+        }
+    }
+
+    pub fn try_get<'s>(&'s self, tag: &JournalTag) -> Option<MutexGuard<'s, Journal>> {
+        match self.database.get(tag) {
+            Some(journal) => journal.try_lock().ok(),
+            None => None,
         }
     }
 
@@ -119,39 +145,58 @@ impl Journals {
     }
 
     pub fn len(&self) -> usize {
-        let len = self.database.len();
-        assert_eq!(len, self.ordering.len());
-        
-        len
+        self.database.len()
     }
 
-    pub fn queue_load(&mut self, tag: &JournalTag, cgi_endpoint: &str, auth: &Authentication) -> Result<()> {
-        let journal = self.database.get(tag)
+    pub fn queue_load(
+        &mut self,
+        tag: JournalTag,
+        cgi_endpoint: &str,
+        auth: Authentication
+    ) -> Result<()> {
+        let journal = self.database.get(&tag)
             .ok_or_else(|| anyhow::anyhow!("Tried to load non-existent journal: {tag:?}"))?;
 
-        let (sender, receiver) = oneshot::channel();
+        let task = Task::new(LoadJournalTask {
+            tag:          tag,
+            journal:      journal.clone(),
+            cgi_endpoint: cgi_endpoint.to_string(),
+            auth:         auth,
+        });
 
-        self.queue.push(receiver);
-
-        tokio::spawn(
-            load_journal(
-                tag.clone(),
-                journal.clone(),
-                cgi_endpoint.to_string(),
-                auth.clone(),
-                sender,
-            )
-        );
+        self.queue.push(task);
 
         Ok(())
     }
 
-    pub fn scan_queue(&mut self) -> Result<()> {
+    pub fn queue_mark(
+        &mut self,
+        tag:     JournalTag,
+        choices: ChoiceSelections,
+        cgi_endpoint: &str,
+        auth: Authentication,
+    ) -> Result<()> {
+        let journal = self.database.get(&tag)
+            .ok_or_else(|| anyhow::anyhow!("Tried to load non-existent journal: {tag:?}"))?;
+
+        let task = Task::new(MarkJournalTask {
+            choices:      choices,
+            journal_tag:  tag,
+            journal:      journal.clone(),
+            cgi_endpoint: cgi_endpoint.to_string(),
+            auth:         auth,
+        });
+
+        self.queue.push(task);
+
+        Ok(())
+    }
+
+    pub fn scan_queue(&mut self) -> Result<usize> {
         let mut happy_to_drop = vec![];
 
-        for (index, receiver) in self.queue.iter_mut().enumerate() {
-            if let Ok(res) = receiver.try_recv() {
-                res?;
+        for (index, task) in self.queue.iter_mut().enumerate() {
+            if let Some(_) = task.poll()? {
                 happy_to_drop.push(index);
             }
         }
@@ -163,7 +208,7 @@ impl Journals {
             self.queue.remove(index);
         }
 
-        Ok(())
+        Ok(self.queue.len())
     }
 }
 
@@ -190,19 +235,21 @@ impl<B> From<&AppMarking<B>> for JournalLoadApp {
     }
 }
 
-async fn load_journal(
-    tag:     JournalTag,
+struct LoadJournalTask {
+    tag: JournalTag,
     journal: Arc<Mutex<Journal>>,
     cgi_endpoint: String,
     auth: Authentication,
-    sender:  JournalLoadSender,
-) {
-    let mut journal = journal.lock().await;
-    if journal.is_loaded() {
-        return;
-    }
+}
 
-    let body = || async move {
+#[async_trait]
+impl TaskRunner<()> for LoadJournalTask {
+    async fn run(self) -> Result<()> {
+        let mut journal = self.journal.lock().await;
+        if journal.is_loaded() {
+            return Ok(());
+        }
+
         #[derive(Deserialize)]
         pub struct SubmissionJson {
             files: BTreeMap<String, FileJson>,
@@ -221,15 +268,16 @@ async fn load_journal(
             text: String,
         }
 
-        let assignment = tag.assignment();
-        let group_id   = tag.group_id();
-        let student_id = tag.student_id();
+        let assignment   = self.tag.assignment();
+        let group_id     = self.tag.group_id();
+        let student_id   = self.tag.student_id();
+        let cgi_endpoint = self.cgi_endpoint;
 
         let full_endpoint = format!("{cgi_endpoint}/api/v1/assignments/{assignment}/submissions/{group_id}/{student_id}/");
 
         let client = reqwest::Client::new();
         let resp: SubmissionJson = client.request(Method::GET, full_endpoint)
-            .basic_auth(auth.username(), Some(auth.password()))
+            .basic_auth(self.auth.username(), Some(self.auth.password()))
             .send()
             .await?
             .json()
@@ -256,52 +304,206 @@ async fn load_journal(
 
         let journal_data = JournalData::new(submission_files, marking_files);
 
-        match &mut *journal {
-            Journal::Unloaded(meta) => {
-                *journal = Journal::Loaded(mem::take(meta), journal_data);
-            }
-            _ => unreachable!("checked at the beginning of body, and we hold lock"),
-        }
+        *journal = Journal::Loaded(LoadedJournal::new(mem::take(journal.meta_mut()), journal_data));
 
-        anyhow::Ok(())
-    };
-
-    sender.send(body().await)
-        .expect("receiver should not drop before sender");
+        Ok(())
+    }
 }
 
-pub type JournalLoadReceiver = oneshot::Receiver<Result<()>>;
-pub type JournalLoadSender   = oneshot::Sender  <Result<()>>;
+struct MarkJournalTask {
+    choices:      ChoiceSelections,
+    journal_tag:  JournalTag,
+    journal:      Arc<Mutex<Journal>>,
+    cgi_endpoint: String,
+    auth:         Authentication
+}
 
+#[async_trait]
+impl TaskRunner<()> for MarkJournalTask {
+    async fn run(self) -> Result<()> {
+        let mut mark = 0;
+        let mut comments = vec![];
+    
+        for choice in self.choices.selections().iter()
+            .filter(|selection| selection.selected())
+            .map(|selection| selection.choice())
+        {
+            match choice {
+                Choice::Plus(n, comment) => {
+                    mark += n;
+                    comments.push(format!("+{n} {comment}"));
+                }
+                Choice::Minus(n, comment) => {
+                    mark -= n;
+                    comments.push(format!("-{n} {comment}"));
+    
+                }
+                Choice::Set(n, comment) => {
+                    mark = *n;
+                    comments.push(format!("{n} {comment}"));
+                }
+                Choice::Comment(_)  => unreachable!(),
+            }
+        }
+    
+        let (journal_mark_name, mut journal_mark_text) = {
+            let mut lock = self.journal.lock().await;
+            
+            let mut data = lock.data_mut().expect("journal must be loaded to mark");
+
+            let mut marking_file = data.marking_files.iter_mut()
+                .find(|file| file.file_name() == "performance")
+                .expect("performance mark must exist");
+
+            let mut text = String::new();
+            marking_file.file_data.seek(std::io::SeekFrom::Start(0))?;
+            marking_file.file_data.read_to_string(&mut text)?;
+
+            (marking_file.file_name().to_string(), text)
+        };
+
+        #[derive(Serialize)]
+        struct MarkPut {
+            marks: BTreeMap<String, Mark>,
+            comments: BTreeMap<String, ()>,
+        }
+
+        #[derive(Serialize)]
+        struct Mark {
+            at: String,
+            by: String,
+            name: String,
+            is_final: bool,
+            mark: f64,
+            text: String,
+        }
+    
+        let mut body = MarkPut {
+            marks: BTreeMap::new(),
+            comments: BTreeMap::new(),
+        };
+    
+        let at = chrono::Local::now().format("%F %T%.6f").to_string();
+        let by = self.auth.username().to_string();
+    
+        journal_mark_text += &format!("\nmarked with flymark by {by} at {at}\n\n");
+
+        for comment in comments {
+            journal_mark_text += &comment;
+            journal_mark_text += "\n";
+        }
+    
+        body.marks.insert(
+            "1".to_string(),
+            Mark {
+                at,
+                by,
+                is_final: true,
+                mark: mark as f64,
+                name: journal_mark_name,
+                text: journal_mark_text,
+            }
+        );
+    
+        let imark  = self.cgi_endpoint;
+        let assign = &self.journal_tag.assignment;
+        let group  = &self.journal_tag.group_id;
+        let stuid  = &self.journal_tag.student_id;
+        
+        let endpoint = format!("{imark}/api/v1/assignments/{assign}/submissions/{group}/{stuid}/");
+
+        reqwest::Client::new()
+            .put(endpoint)
+            .basic_auth(self.auth.username(), Some(self.auth.password()))
+            .json(&body)
+            .send()
+            .await?
+            .text()
+            .await?;
+        
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
 pub enum Journal {
-    Unloaded(JournalMeta),
-    Loaded(JournalMeta, JournalData),
+    Unloaded(UnloadedJournal),
+    Loaded  (LoadedJournal),
 }
 
 impl Journal {
     pub fn meta(&self) -> &JournalMeta {
         match self {
-            Self::Unloaded(meta)    => meta,
-            Self::Loaded  (meta, _) => meta,
+            Self::Unloaded(UnloadedJournal { meta })
+            | Self::Loaded(LoadedJournal { meta, .. }) => meta,
+        }
+    }
+
+    pub fn meta_mut(&mut self) -> &mut JournalMeta {
+        match self {
+            Self::Unloaded(UnloadedJournal { meta })
+            | Self::Loaded(LoadedJournal { meta, .. }) => meta,
         }
     }
 
     pub fn data(&self) -> Option<&JournalData> {
         match self {
-            Self::Unloaded(_)       => None,
-            Self::Loaded  (_, data) => Some(data),
+            Self::Unloaded(_) => None,
+            Self::Loaded(LoadedJournal { meta: _, data }) => Some(data),
+        }
+    }
+
+    pub fn data_mut(&mut self) -> Option<&mut JournalData> {
+        match self {
+            Self::Unloaded(_) => None,
+            Self::Loaded(LoadedJournal { meta: _, data }) => Some(data),
         }
     }
 
     pub fn is_loaded(&self) -> bool {
         match self {
-            Self::Unloaded(_)    => false,
-            Self::Loaded  (_, _) => true,
+            Self::Unloaded(_) => false,
+            Self::Loaded  (_) => true,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug)]
+pub struct UnloadedJournal {
+    meta: JournalMeta,
+}
+
+impl UnloadedJournal {
+    pub fn new(meta: JournalMeta) -> Self {
+        Self { meta }
+    }
+
+    pub fn meta(&self) -> &JournalMeta {
+        &self.meta
+    }
+}
+
+#[derive(Debug)]
+pub struct LoadedJournal {
+    meta: JournalMeta,
+    data: JournalData,
+}
+
+impl LoadedJournal {
+    pub fn new(meta: JournalMeta, data: JournalData) -> Self {
+        Self { meta, data }
+    }
+
+    pub fn meta(&self) -> &JournalMeta {
+        &self.meta
+    }
+
+    pub fn data(&self) -> &JournalData {
+        &self.data
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct JournalTag {
     assignment: String,
     group_id:   String,
@@ -330,7 +532,7 @@ impl JournalTag {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct JournalMeta {
     name: String,
     provisional_mark: Option<f64>,
@@ -359,6 +561,7 @@ impl JournalMeta {
     }
 }
 
+#[derive(Debug)]
 pub struct JournalData {
     submission_files: Vec<JournalFile>,
     marking_files:    Vec<JournalFile>,
@@ -381,6 +584,7 @@ impl JournalData {
     }
 }
 
+#[derive(Debug)]
 pub struct JournalFile {
     file_name: String,
     file_data: MemFile,
@@ -423,21 +627,23 @@ impl PartialEq for JournalMeta {
 
 impl PartialOrd for JournalMeta {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        let ordering = match (self.mark, other.mark) {
+        let mark_ordering = match (self.mark, other.mark) {
             (Some(a), Some(b)) => b.partial_cmp(&a).unwrap_or(Ordering::Equal),
             (Some(_), None) => Ordering::Greater,
             (None, Some(_)) => Ordering::Less,
-            (None, None) => {
-                match (self.provisional_mark, other.provisional_mark) {
-                    (Some(a), Some(b)) => b.partial_cmp(&a).unwrap_or(Ordering::Equal),
-                    (Some(_), None) => Ordering::Greater,
-                    (None, Some(_)) => Ordering::Less,
-                    (None, None) => self.name.cmp(&other.name),
-                }
-            }
+            (None, None)    => Ordering::Equal,
         };
 
-        Some(ordering)
+        let provisional_mark_ordering = match (self.provisional_mark, other.provisional_mark) {
+            (Some(a), Some(b)) => b.partial_cmp(&a).unwrap_or(Ordering::Equal),
+            (Some(_), None) => Ordering::Greater,
+            (None, Some(_)) => Ordering::Less,
+            (None, None)    => Ordering::Equal,
+        };
+
+        let name_ordering = self.name.cmp(&other.name);
+
+        Some(mark_ordering.then(provisional_mark_ordering).then(name_ordering))
     }
 }
 

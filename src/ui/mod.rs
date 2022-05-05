@@ -27,7 +27,7 @@ pub trait AppPage<B> {
         B: Backend,
     ;
 
-    async fn quit(&mut self);
+    async fn quit(&mut self) -> Result<()>;
 }
 
 pub trait UiPage<B> {

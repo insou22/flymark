@@ -1,3 +1,5 @@
+use std::thread;
+
 use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::oneshot::{error::TryRecvError, self};
@@ -30,6 +32,16 @@ impl<T: Send + 'static> Task<T> {
             Err(TryRecvError::Empty) => Ok(None),
             // Task panicked or otherwise dropped
             Err(TryRecvError::Closed) => Err(anyhow::anyhow!("Task receiver disconnected")),
+        }
+    }
+}
+
+impl<T> Drop for Task<T> {
+    fn drop(&mut self) {
+        if !matches!(self.receiver.try_recv(), Err(TryRecvError::Closed)) {
+            if !thread::panicking() {
+                panic!("Dropped Task handle without waiting for task to complete");
+            }
         }
     }
 }

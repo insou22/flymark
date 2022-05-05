@@ -26,8 +26,8 @@ pub enum AppPostAuthState {
 }
 
 pub struct FetchJournalsOutput {
-    assignment: String,
-    journals: Journals,
+    pub assignment: String,
+    pub journals: Journals,
 }
 
 impl<B> AppPostAuth<B> {
@@ -74,8 +74,8 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppPostAuth<B> {
 
                     return Ok(Some(Box::new(
                         AppJournalList::new(
-                            mem::take(&mut self.globals),
-                            mem::take(&mut self.auth),
+                            self.globals.clone(),
+                            self.auth.clone(),
                             output.assignment,
                             output.journals
                         )
@@ -102,13 +102,13 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppPostAuth<B> {
                         self.current_assignment = (self.current_assignment + self.assignments.len() - 1) % self.assignments.len();
                     }
                     KeyCode::Enter => {
-                        let imark_cgi_endpoint = self.globals.cgi_endpoint().to_string();
-                        let auth = mem::take(&mut self.auth);
+                        let globals = self.globals.clone();
+                        let auth = self.auth.clone();
                         let assignment = mem::take(&mut self.assignments[self.current_assignment]);
 
                         let task = Task::new(
                             FetchJournalsTask {
-                                imark_cgi_endpoint,
+                                globals,
                                 auth,
                                 assignment
                             }
@@ -130,15 +130,15 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppPostAuth<B> {
         self.ui.update();
     }
 
-    async fn quit(&mut self) {
-        
+    async fn quit(&mut self) -> Result<()> {
+        Ok(())
     }
 }
 
-struct FetchJournalsTask {
-    imark_cgi_endpoint: String,
-    auth: Authentication,
-    assignment: String,
+pub struct FetchJournalsTask {
+    pub globals: Globals,
+    pub auth: Authentication,
+    pub assignment: String,
 }
 
 #[async_trait]
@@ -158,7 +158,7 @@ impl TaskRunner<FetchJournalsOutput> for FetchJournalsTask {
             mark: Option<f64>,
         }
 
-        let imark_cgi_endpoint = self.imark_cgi_endpoint;
+        let imark_cgi_endpoint = self.globals.cgi_endpoint();
         let auth = self.auth;
         let assignment = self.assignment;
 

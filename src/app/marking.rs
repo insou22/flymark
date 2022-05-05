@@ -1,13 +1,15 @@
-use std::{process, path::Path, os::unix::prelude::AsRawFd};
+use std::{process, path::Path, os::unix::prelude::AsRawFd, mem};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use crossterm::event::Event;
+use crossterm::event::{Event, KeyCode};
 use tmux_interface::{RespawnPane, SplitWindow};
 use tokio::fs::{remove_file, symlink};
 use tui::{backend::Backend, Frame};
 
-use crate::{imark::{Globals, Authentication, Journals, JournalTag}, choice::ChoiceSelections, ui::{marking::MarkingUi, AppPage, UiPage}};
+use crate::{imark::{Globals, Authentication, Journals, JournalTag}, choice::{ChoiceSelections, Choice}, ui::{marking::MarkingUi, AppPage, UiPage}, util::{task::Task, tmux::TmuxPane}};
+
+use super::{assignments::{FetchJournalsOutput, FetchJournalsTask}, journals::AppJournalList};
 
 pub struct AppMarking<B> {
     globals: Globals,
@@ -15,7 +17,7 @@ pub struct AppMarking<B> {
     assignment: String,
     journals: Journals,
     live_journal_tag: JournalTag,
-    tmux_side_pane_id: Option<String>,
+    tmux_side_pane: Option<TmuxPane>,
     state: AppMarkingState,
     ui: MarkingUi<B>,
 }
@@ -25,6 +27,8 @@ pub enum AppMarkingState {
     JournalLoading,
     JournalLoaded,
     Marking { choices: ChoiceSelections },
+    WaitingToReturn,
+    Returning { task: Task<FetchJournalsOutput> },
 }
 
 impl<B> AppMarking<B> {
@@ -34,7 +38,7 @@ impl<B> AppMarking<B> {
         assignment: String,
         journals: Journals,
         live_journal_tag: JournalTag,
-        tmux_side_pane_id: Option<String>,
+        tmux_side_pane: Option<TmuxPane>,
     ) -> Self {
         let choice_selections = ChoiceSelections::new(globals.choices()); 
 
@@ -44,7 +48,7 @@ impl<B> AppMarking<B> {
             assignment,
             journals,
             live_journal_tag,
-            tmux_side_pane_id,
+            tmux_side_pane,
             state: AppMarkingState::JournalReadyToQueue,
             ui: MarkingUi::new(),
         }
@@ -80,13 +84,13 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
     async fn tick(&mut self, io: Option<Event>) -> Result<Option<Box<dyn AppPage<B>>>> {
         match &mut self.state {
             AppMarkingState::JournalReadyToQueue | AppMarkingState::JournalLoading => {
-                if self.journals.get(&self.live_journal_tag).await
-                    .expect("journal must exist in the database")
-                    .is_loaded()
+                if self.journals.try_get(&self.live_journal_tag)
+                    .map(|journal| journal.is_loaded())
+                    .unwrap_or(false)
                 {
                     self.state = AppMarkingState::JournalLoaded;
                 } else if matches!(self.state, AppMarkingState::JournalReadyToQueue) {
-                    self.journals.queue_load(&self.live_journal_tag, self.globals.cgi_endpoint(), &self.auth);
+                    self.journals.queue_load(self.live_journal_tag.clone(), self.globals.cgi_endpoint(), self.auth.clone());
 
                     self.state = AppMarkingState::JournalLoading;
                 }
@@ -116,26 +120,12 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
 
                 drop(journal);
 
-                match self.tmux_side_pane_id.as_ref() {
-                    Some(id) => {
-                        RespawnPane::new()
-                            .kill()
-                            .target_pane(id)
-                            .shell_command(shell_command)
-                            .output()?;
+                match self.tmux_side_pane.as_ref() {
+                    Some(pane) => {
+                        pane.respawn(&shell_command)?;
                     }
                     None => {
-                        let pane_id = String::from_utf8(
-                            SplitWindow::new()
-                                .print()
-                                .horizontal()
-                                .detached()
-                                .shell_command(shell_command)
-                                .output()?
-                                .stdout()
-                        )?.trim().to_string();
-        
-                        self.tmux_side_pane_id = Some(pane_id);
+                        self.tmux_side_pane = Some(TmuxPane::new_from_split(&shell_command)?)
                     }
                 }
     
@@ -149,12 +139,109 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
                 let next_three_journals = next_three_journals_iter.take(3)
                     .map(|(tag, _)| tag.clone())
                     .collect::<Vec<_>>();
-                
+
                 for next_journal in next_three_journals {
-                    self.journals.queue_load(&next_journal, self.globals.cgi_endpoint(), &self.auth);
+                    self.journals.queue_load(next_journal, self.globals.cgi_endpoint(), self.auth.clone());
                 }
             }
             AppMarkingState::Marking { .. } => {}
+            AppMarkingState::WaitingToReturn => {
+                if self.journals.scan_queue()? == 0 {
+                    let globals    = self.globals.clone();
+                    let auth       = self.auth.clone();
+                    let assignment = self.assignment.to_string();
+
+                    let task = Task::new(FetchJournalsTask {
+                        globals,
+                        auth,
+                        assignment,
+                    });
+
+                    self.state = AppMarkingState::Returning { task };
+                }
+            }
+            AppMarkingState::Returning { task } => {
+                if let Some(output) = task.poll()? {
+                    return Ok(Some(Box::new(
+                        AppJournalList::new(
+                            self.globals.clone(),
+                            self.auth.clone(),
+                            output.assignment,
+                            output.journals,
+                        )
+                    )));
+                }
+
+                return Ok(None);
+            }
+        }
+
+        let event = match io {
+            Some(event) => event,
+            None => return Ok(None),
+        };
+
+        match &mut self.state {
+            AppMarkingState::JournalReadyToQueue
+            | AppMarkingState::JournalLoading
+            | AppMarkingState::JournalLoaded => {}
+            AppMarkingState::Marking { choices } => {
+                match event {
+                    Event::Key(key) => {
+                        match key.code {
+                            KeyCode::Down  => {
+                                choices.cursor_next();
+                            }
+                            KeyCode::Up    => {
+                                choices.cursor_prev();
+                            }
+                            KeyCode::Char(' ') | KeyCode::Right => {
+                                choices.toggle_selection();
+                            }
+                            KeyCode::Char('q') => {
+                                self.state = AppMarkingState::WaitingToReturn;
+                            }
+                            KeyCode::Enter => {
+                                self.journals.queue_mark(
+                                    self.live_journal_tag.clone(),
+                                    mem::take(choices),
+                                    self.globals.cgi_endpoint(),
+                                    self.auth().clone(),
+                                );
+
+                                let mut journals_iter = self.journals.iter();
+                                journals_iter.find(|(tag, _)| *tag == self.live_journal_tag());
+
+                                let next_journal = journals_iter.next();
+                                match next_journal {
+                                    Some((tag, _)) => {
+                                        let tag = tag.clone();
+                                        drop(journals_iter);
+
+                                        return Ok(Some(Box::new(
+                                            AppMarking::new(
+                                                self.globals.clone(),
+                                                self.auth.clone(),
+                                                mem::take(&mut self.assignment),
+                                                mem::take(&mut self.journals),
+                                                tag,
+                                                mem::take(&mut self.tmux_side_pane),
+                                            )
+                                        )));
+                                    }
+                                    None => {
+                                        self.state = AppMarkingState::WaitingToReturn;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            AppMarkingState::WaitingToReturn
+            | AppMarkingState::Returning { .. } => {}
         }
         
         Ok(None)
@@ -165,7 +252,11 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
         self.ui.update();
     }
 
-    async fn quit(&mut self) {
-        
+    async fn quit(&mut self) -> Result<()> {
+        while self.journals.scan_queue()? > 0 {
+            tokio::task::yield_now().await;
+        }
+
+        Ok(())
     }
 }

@@ -69,8 +69,8 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppJournalList<B> {
                         self.current_index = (self.current_index + self.journals.len() - 1) % self.journals.len();
                     }
                     KeyCode::Enter => {
-                        let globals    = mem::take(&mut self.globals);
-                        let auth       = mem::take(&mut self.auth);
+                        let globals    = self.globals().clone();
+                        let auth       = self.auth().clone();
                         let assignment = mem::take(&mut self.assignment);
                         let journals   = mem::take(&mut self.journals);
                         let live_journal_tag = journals.iter()
@@ -104,7 +104,11 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppJournalList<B> {
         self.ui.update();
     }
 
-    async fn quit(&mut self) {
-        
+    async fn quit(&mut self) -> Result<()> {
+        while self.journals.scan_queue()? > 0 {
+            tokio::task::yield_now().await;
+        }
+
+        Ok(())
     }
 }

@@ -13,6 +13,7 @@ pub enum Choice {
     Comment(String),
 }
 
+#[derive(Default)]
 pub struct ChoiceSelections {
     selections: Vec<ChoiceSelection>,
     cursor:     usize,
@@ -57,11 +58,61 @@ impl ChoiceSelections {
     pub fn real_cursor(&self) -> usize {
         self.selections[self.cursor].real_index
     }
+    
+    pub fn toggle_selection(&mut self) {
+        let selection = &mut self.selections[self.cursor];
+
+        match selection.choice() {
+            Choice::Plus(_, _) | Choice::Minus(_, _) => {
+                for other in &mut self.selections {
+                    if matches!(other.choice(), Choice::Set(_, _)) {
+                        other.selected = false;
+                    }
+                }
+
+                self.selections[self.cursor].selected = !self.selections[self.cursor].selected;
+            }
+            Choice::Set(_, _)  => {
+                for other in &mut self.selections {
+                    other.selected = false;
+                }
+
+                self.selections[self.cursor].selected = !self.selections[self.cursor].selected;
+            }
+            Choice::Comment(_) => unreachable!(),
+        }
+    }
+
+    pub fn cursor_next(&mut self) {
+        self.cursor = (self.cursor + 1) % self.selections.len();
+    }
+
+    pub fn cursor_prev(&mut self) {
+        self.cursor = (self.cursor + self.selections.len() - 1) % self.selections.len();
+    }
 
     pub fn from_real_index(&self, real_index: usize) -> Option<(usize, &ChoiceSelection)> {
         self.selections.iter()
             .enumerate()
             .find(|(_, selection)| selection.real_index == real_index)
+    }
+}
+
+impl ChoiceSelection {
+    pub fn choice(&self) -> &Choice {
+        &self.choice
+    }
+
+    pub fn selected(&self) -> bool {
+        self.selected
+    }
+
+    pub fn toggle(&mut self) {
+        self.selected = !self.selected;
+    }
+
+    pub fn real_index(&self) -> usize {
+        self.real_index
     }
 }
 

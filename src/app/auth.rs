@@ -52,6 +52,7 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppPreAuth<B> {
             AppPreAuthState::EnteringZid { zid_input } => {
                 if let Some(event) = io {
                     let submitted = process_input(event, zid_input);
+
                     if submitted {
                         self.state = AppPreAuthState::EnteringPassword {
                             zid: zid_input.value().to_string(),
@@ -84,7 +85,7 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppPreAuth<B> {
                 if let Some(output) = task.poll()? {
                     return Ok(Some(Box::new(
                         AppPostAuth::new(
-                            mem::take(&mut self.globals),
+                            self.globals.clone(),
                             Authentication::new(mem::take(zid), mem::take(password)),
                             output.assignments,
                         )
@@ -101,8 +102,8 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppPreAuth<B> {
         self.ui.update();
     }
 
-    async fn quit(&mut self) {
-        
+    async fn quit(&mut self) -> Result<()> {
+        Ok(())
     }
 }
 
