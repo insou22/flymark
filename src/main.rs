@@ -1,13 +1,15 @@
-#![allow(unused)]
+// #![allow(unused)]
 
 mod choices;
 mod ui;
+
+use std::process::Stdio;
 
 use anyhow::{Result, Context, bail};
 use choices::{Choices, Choice};
 use clap::Parser;
 use tempfile::TempDir;
-use tokio::{fs::File, io::AsyncReadExt};
+use tokio::{fs::File, io::AsyncReadExt, process::Command};
 use ui::AppParams;
 
 #[derive(Parser, Debug)]
@@ -16,6 +18,10 @@ pub struct Args {
     /// The endpoint you will use for marking (overrides the course + session args)
     #[clap(short, long)]
     endpoint: Option<String>,
+
+    /// Command to run the marking pager (default: tries to find bat, falls back to less)
+    #[clap(short, long)]
+    pager_command: Option<String>,
 
     /// The path to the marking scheme you will use
     scheme: String,
@@ -36,10 +42,17 @@ async fn main() -> Result<()> {
 
     ensure_tmux()?;
 
+    let pager_command = locate_pager(&args).await?;
+
     let work_dir = move_to_work_dir()
         .context("Failed to create temporary work directory")?;
 
-    let launch_params = AppParams::new(&args, &endpoint, &choices, &work_dir);
+    let launch_params = AppParams::new(
+        &endpoint,
+        &choices,
+        &pager_command,
+        &work_dir
+    );
     ui::launch_ui(launch_params).await?;
 
     Ok(())
@@ -81,6 +94,50 @@ fn ensure_tmux() -> Result<()> {
     }
 
     Ok(())
+}
+
+async fn locate_pager(args: &Args) -> Result<String> {
+    if let Some(pager) = args.pager_command.as_ref() {
+        return Ok(pager.to_string());
+    }
+
+    let have_6991_bat = Command::new("/home/cs6991/bin/bat")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .arg("--version")
+        .output()
+        .await
+        .is_ok();
+    
+    if have_6991_bat {
+        return Ok("/home/cs6991/bin/bat --paging=always".to_string());
+    }
+
+    let have_bat = Command::new("bat")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .arg("--version")
+        .output()
+        .await
+        .is_ok();
+    
+    if have_bat {
+        return Ok("bat --paging=always".to_string());
+    }
+    
+    let have_less = Command::new("less")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .arg("--version")
+        .output()
+        .await
+        .is_ok();
+
+    if have_less {
+        Ok("less".to_string())
+    } else {
+        bail!("Failed to find a pager -- please specify one with -p");
+    }
 }
 
 fn move_to_work_dir() -> Result<TempDir> {

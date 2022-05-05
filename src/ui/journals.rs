@@ -1,4 +1,4 @@
-use std::{mem, collections::BTreeMap, sync::{Arc}};
+use std::{mem, collections::BTreeMap, sync::{Arc}, cmp::Ordering};
 
 use anyhow::{anyhow, Result, Context};
 use crossterm::event::{Event, KeyCode};
@@ -74,7 +74,7 @@ pub fn tick_app(app: &mut App<'_>, io_event: Option<Event>) -> Result<()> {
             if let Ok(response) = channel.try_recv() {
                 match response {
                     JournalsTaskOutput::Success { journals } => {
-                        let flattened_journals = journals.submissions.into_iter()
+                        let mut flattened_journals = journals.submissions.into_iter()
                             .map(|(group_id, group)| {
                                 group.into_iter()
                                     .map(|(student_id, submission)| {
@@ -96,6 +96,22 @@ pub fn tick_app(app: &mut App<'_>, io_event: Option<Event>) -> Result<()> {
                         if flattened_journals.len() == 0 {
                             return anyhow::Result::Err(anyhow!("No journals found for selected assignment"));
                         }
+
+                        flattened_journals.sort_by(|a, b| {
+                            match (a.mark, b.mark) {
+                                (Some(a), Some(b)) => b.partial_cmp(&a).unwrap_or(Ordering::Equal),
+                                (Some(_), None) => Ordering::Greater,
+                                (None, Some(_)) => Ordering::Less,
+                                (None, None) => {
+                                    match (a.provisional_mark, b.provisional_mark) {
+                                        (Some(a), Some(b)) => b.partial_cmp(&a).unwrap_or(Ordering::Equal),
+                                        (Some(_), None) => Ordering::Greater,
+                                        (None, Some(_)) => Ordering::Less,
+                                        (None, None) => a.student_id.cmp(&b.student_id),
+                                    }
+                                }
+                            }
+                        });
 
                         let mut list_state = ListState::default();
                         list_state.select(Some(0));

@@ -1,10 +1,10 @@
-use std::{collections::BTreeMap, io::Write, os::unix::prelude::AsRawFd, process, path::Path};
+use std::{collections::BTreeMap, io::{Write, Read, Seek}, os::unix::prelude::AsRawFd, process, path::Path};
 
 use anyhow::{anyhow, Result, Context};
 use crossterm::event::{Event, KeyCode};
 use memfile::{MemFile, CreateOptions, Seal};
 use reqwest::Method;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tmux_interface::{SplitWindow, RespawnPane};
 use tokio::{sync::oneshot, fs::{symlink, remove_file}};
 use tui::{backend::Backend, Frame, widgets::{Borders, Block, Paragraph, ListState, ListItem, List}, layout::{Constraint, Direction, Layout}, style::{Style, Color}, text::Span};
@@ -18,7 +18,7 @@ pub enum MarkingState {
     LoadingContent { journal_index: usize, channel: oneshot::Receiver<MarkingTaskOutput> },
     LoadingFromPreload { journal_index: usize },
     Loaded  { journal_index: usize },
-    Marking { journal_index: usize, list_state: ListState, choices: Vec<(Choice, bool)>, },
+    Marking { journal_index: usize, list_state: ListState, choices: Vec<(Choice, bool)> },
 }
 
 #[derive(Debug)]
@@ -138,7 +138,7 @@ pub async fn tick_app(app: &mut App<'_>, io_event: Option<Event>) -> Result<()> 
             };
 
             let pid = process::id();
-            let mut shell_command = String::from("/home/zac/bin/bat --paging always");
+            let mut shell_command = String::from(app.params.pager_command);
             for (name, fd) in files.0.iter().chain(files.1.iter()) {
                 if Path::exists(Path::new(name)) {
                     remove_file(name).await?;
@@ -212,10 +212,10 @@ pub async fn tick_app(app: &mut App<'_>, io_event: Option<Event>) -> Result<()> 
     };
 
     match &mut app.state {
-        AppState::Marking(_journals, mark_state @ MarkingState::Marking { .. }) => {
+        AppState::Marking(journals, mark_state @ MarkingState::Marking { .. }) => {
             // fucking borrowck
             let (journal_index, list_state, choices) = match mark_state {
-                MarkingState::Marking { journal_index, list_state, choices, .. } => (*journal_index, list_state, choices),
+                MarkingState::Marking { journal_index, list_state, choices } => (*journal_index, list_state, choices),
                 _ => unreachable!(),
             };
 
@@ -270,7 +270,7 @@ pub async fn tick_app(app: &mut App<'_>, io_event: Option<Event>) -> Result<()> 
                                 }
                             ));
                         }
-                        KeyCode::Char(' ') => {
+                        KeyCode::Char(' ') | KeyCode::Right => {
                             let current = list_state.selected().unwrap();
                             choices[current].1 = !choices[current].1;
 
@@ -289,6 +289,96 @@ pub async fn tick_app(app: &mut App<'_>, io_event: Option<Event>) -> Result<()> 
                             }
                         }
                         KeyCode::Enter => {
+                            let mut mark = 0;
+                            let mut comments = vec![];
+
+                            for choice in choices.iter()
+                                .filter(|(_, selected)| *selected)
+                                .map(|(choice, _)| choice)
+                            {
+                                match choice {
+                                    Choice::Plus(n, comment) => {
+                                        mark += n;
+                                        comments.push(format!("+{n} {comment}"));
+                                    }
+                                    Choice::Minus(n, comment) => {
+                                        mark -= n;
+                                        comments.push(format!("-{n} {comment}"));
+
+                                    }
+                                    Choice::Set(n, comment) => {
+                                        mark = *n;
+                                        comments.push(format!("{n} {comment}"));
+                                    }
+                                    Choice::Comment(_)  => {}
+                                }
+                            }
+
+                            let journal = &journals[journal_index];
+                            let (journal_mark_name, mut journal_mark_text) = {
+                                match &mut *journal.details.lock() {
+                                    JournalDetails::Loaded(journal) => {
+                                        let (name, file) = journal.marking_files.iter_mut()
+                                            .find(|(name, _)| name == "performance")
+                                            .expect("performance mark must exist");
+
+                                        let mut text = String::new();
+                                        file.seek(std::io::SeekFrom::Start(0))?;
+                                        file.read_to_string(&mut text)?;
+
+                                        (name.to_string(), text)
+                                    }
+                                    _ => unreachable!(),
+                                }
+                            };
+
+                            let mut body = MarkPut {
+                                marks: BTreeMap::new(),
+                                comments: BTreeMap::new(),
+                            };
+
+                            let at = chrono::Local::now().format("%F %T%.6f").to_string();
+                            let by = app.auth.as_ref().unwrap().username.to_string();
+
+                            journal_mark_text += &format!("\nmarked with flymark by {by} at {at}\n\n");
+
+                            for comment in comments {
+                                journal_mark_text += &comment;
+                                journal_mark_text += "\n";
+                            }
+
+                            body.marks.insert(
+                                "1".to_string(),
+                                Mark {
+                                    at,
+                                    by,
+                                    is_final: true,
+                                    mark: mark as f64,
+                                    name: journal_mark_name,
+                                    text: journal_mark_text,
+                                }
+                            );
+
+                            let imark = app.params.endpoint;
+                            let assign = &journal.assignment;
+                            let group  = &journal.group_id;
+                            let stuid  = &journal.student_id;
+                            
+                            let endpoint = format!("{imark}/api/v1/assignments/{assign}/submissions/{group}/{stuid}/");
+
+                            let (sender, receiver) = oneshot::channel::<Result<()>>();
+
+                            app.mark_puts.push(receiver);
+
+                            tokio::spawn(
+                                submit_journal(
+                                    sender,
+                                    endpoint,
+                                    app.auth.as_ref().unwrap().clone(),
+                                    body,
+                                )
+                            );
+
                             let journal_index = journal_index + 1;
 
                             *mark_state = MarkingState::ReadyToLoad { journal_index };
@@ -422,6 +512,48 @@ async fn populate_journal(
         }
     }
 }
+
+
+#[derive(Serialize)]
+struct MarkPut {
+    marks: BTreeMap<String, Mark>,
+    comments: BTreeMap<String, ()>,
+}
+
+#[derive(Serialize)]
+struct Mark {
+    at: String,
+    by: String,
+    name: String,
+    is_final: bool,
+    mark: f64,
+    text: String,
+}
+
+async fn submit_journal(
+    sender: oneshot::Sender<Result<()>>,
+    full_endpoint: String,
+    auth: BasicAuth,
+    body: MarkPut,
+) {
+    let main = || async {
+        dbg!(reqwest::Client::new()
+            .put(full_endpoint)
+            .basic_auth(auth.username(), Some(auth.password()))
+            .json(&body)
+            .send()
+            .await?
+            .text()
+            .await?
+        );
+
+        anyhow::Ok(())
+    };
+    
+    let result = main().await;
+    sender.send(result).expect("receiver should not drop before sending");
+}
+
 
 pub fn draw<B: Backend>(frame: &mut Frame<B>, app: &mut App, tickers: &mut UiTickers) {
     match &mut app.state {

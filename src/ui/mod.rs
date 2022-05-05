@@ -12,32 +12,32 @@ use futures::{StreamExt, FutureExt};
 use futures_timer::Delay;
 use tempfile::TempDir;
 use tmux_interface::KillPane;
-use tokio::select;
+use tokio::{select, sync::oneshot};
 use tui::{Terminal, backend::{CrosstermBackend, Backend}, Frame};
 use tui_input::Input;
 
-use crate::{Args, choices::Choices};
+use crate::choices::Choices;
 
 use self::{auth::AuthenticatingState, term::TerminalSettings, assignments::AssignmentsState, journals::{JournalsState, Journal}, marking::MarkingState};
 
 pub struct AppParams<'a> {
-    args:         &'a Args,
-    endpoint:     &'a str,
-    choices:      &'a Choices,
-    work_dir:     &'a TempDir,
+    endpoint:      &'a str,
+    choices:       &'a Choices,
+    pager_command: &'a str,
+    work_dir:      &'a TempDir,
 }
 
 impl<'a> AppParams<'a> {
     pub fn new(
-        args:         &'a Args,
         endpoint:     &'a str,
         choices:      &'a Choices,
+        pager_command: &'a str,
         work_dir:     &'a TempDir,
     ) -> Self {
         Self {
-            args,
             endpoint,
             choices,
+            pager_command,
             work_dir,
         }
     }
@@ -51,6 +51,7 @@ pub async fn launch_ui(params: AppParams<'_>) -> Result<()> {
         auth: None,
         side_pane_id: None,
         state: AppState::Authenticating(AuthenticatingState::EnteringZid { zid_input: Input::default() }),
+        mark_puts: Vec::new(),
     };
 
     launch_app(terminal.terminal_mut(), app).await?;
@@ -63,6 +64,7 @@ pub struct App<'a> {
     auth:  Option<BasicAuth>,
     side_pane_id: Option<String>,
     state: AppState,
+    mark_puts: Vec<oneshot::Receiver<Result<()>>>,
 }
 
 impl Drop for App<'_> {
@@ -114,6 +116,7 @@ pub async fn launch_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App<'_>
     let mut ui_tickers   = UiTickers::default();
     let mut event_reader = EventStream::new();
 
+    let mut trying_to_quit = false;
     loop {
         let timeout = Delay::new(Duration::from_millis(10)).fuse();
         let event   = event_reader.next().fuse();
@@ -126,10 +129,29 @@ pub async fn launch_app<B: Backend>(terminal: &mut Terminal<B>, mut app: App<'_>
                 Some(event)
             }
         };
-        
+
+        let mut happy_to_drop = vec![];
+
+        for (i, receiver) in app.mark_puts.iter_mut().enumerate() {
+            if let Ok(res) = receiver.try_recv() {
+                res?;
+                happy_to_drop.push(i);
+            }
+        }
+
+        happy_to_drop.sort_unstable_by(|a, b| b.cmp(a));
+
+        for i in happy_to_drop {
+            app.mark_puts.remove(i);
+        }
+
         if let Some(event) = event {
-            if should_quit(event) {
-                break;
+            if trying_to_quit || should_quit(event) {
+                trying_to_quit = true;
+
+                if app.mark_puts.is_empty() {
+                    break;
+                }
             }
         }
 
