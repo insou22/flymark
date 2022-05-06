@@ -4,6 +4,6 @@
 +2 Correctly implemented thing 4
 -5 They cheated
 =================================
-0 No hope for this one
-5 Halfway there
-9 Basically correct
+=0 No hope for this one
+=5 Halfway there
+=9 Basically correct

@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::{Result, bail, Context};
 
 #[derive(Debug, Default)]
 pub struct Choices {
@@ -128,38 +128,52 @@ impl ChoiceSelection {
 pub fn parse_choices(contents: &str) -> Result<Choices> {
     let mut choices = vec![];
     
-    for line in contents.lines() {
+    for (line_index, line) in contents.lines().enumerate() {
         let line = line.trim();
+        let line_number = line_index + 1;
         
-        let first_char = match line.chars().next() {
-            Some(first_char) => first_char,
-            None => {
-                // Empty line -- just a blank comment
-                choices.push(Choice::Comment(String::new()));
+        let (first_char, second_char) = match <[char; 2]>::try_from(line.chars().take(2).collect::<Vec<char>>()) {
+            Ok([first_char, second_char]) => (first_char, second_char),
+            Err(_) => {
+                // Not a semantic line -- leave it as a comment
+                choices.push(Choice::Comment(line.to_string()));
                 continue;
             }
         };
 
-        let choice = match first_char {
-            '+' => {
-                let (number, rest) = parse_number(skip_first_char(line))?;
+        let fallible = || {
+            let choice = match (first_char, second_char) {
+                ('+', '0'..='9') => {
+                    let (number, rest) = parse_number(skip_first_char(line))?;
+    
+                    Choice::Plus(number, rest.to_string())
+                }
+                ('-', '0'..='9') => {
+                    let (number, rest) = parse_number(skip_first_char(line))?;
+    
+                    Choice::Minus(number, rest.to_string())
+                }
+                ('=', '0'..='9') => {
+                    let (number, rest) = parse_number(skip_first_char(line))?;
+    
+                    Choice::Set(number, rest.to_string())
+                }
+                ('0'..='9', _) => {
+                    bail!("Choice file should never start with a number\n\
+                           If you meant to add to the mark, use +number\n\
+                           If you meant to set the mark, use= number\n\
+                           If you didn't mean either of these, you're bound to confuse markers");
+                }
+                _ => {
+                    Choice::Comment(line.to_string())
+                }
+            };
 
-                Choice::Plus(number, rest.to_string())
-            }
-            '-' => {
-                let (number, rest) = parse_number(skip_first_char(line))?;
-
-                Choice::Minus(number, rest.to_string())
-            }
-            '0'..='9' => {
-                let (number, rest) = parse_number(line)?;
-
-                Choice::Set(number, rest.to_string())
-            }
-            _ => {
-                Choice::Comment(line.to_string())
-            }
+            Ok(choice)
         };
+
+        let choice = fallible()
+            .with_context(|| format!("Choice file error on line {line_number}"))?;
 
         choices.push(choice);
     }
