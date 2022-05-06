@@ -2,7 +2,7 @@ use std::{marker::PhantomData, num::Wrapping};
 
 use tui::{Frame, backend::Backend, widgets::{ListItem, List, Block, Borders, ListState, Paragraph}, style::{Style, Color, Modifier}, layout::{Layout, Direction, Constraint, Rect}, text::Span};
 
-use crate::{app::marking::{AppMarking, AppMarkingState}, choice::Choice};
+use crate::{app::marking::{AppMarking, AppMarkingState}, choice::Choice, util::HOTKEYS};
 
 use super::UiPage;
 
@@ -127,20 +127,21 @@ impl<B: Backend + Send + 'static> UiPage<B> for MarkingUi<B> {
                         );
     
                 frame.render_widget(info, info_chunk);
-                
+
                 let list_items = app.globals().choices().choices.iter()
                     .enumerate()
                     .map(|(index, choice)| {
+                        let hotkey = HOTKEYS.chars().nth(index).unwrap_or(' ');
                         ListItem::new(Span::styled(
                             match choice {
                                 Choice::Plus (n, text) => {
-                                    format!("+{n} {text}")
+                                    format!("({hotkey}) +{n} {text}")
                                 }
                                 Choice::Minus(n, text) => {
-                                    format!("-{n} {text}")
+                                    format!("({hotkey}) -{n} {text}")
                                 }
                                 Choice::Set  (n, text) => {
-                                    format!("{n} {text}")
+                                    format!("({hotkey}) {n} {text}")
                                 }
                                 Choice::Comment(text)  => {
                                     text.to_string()
