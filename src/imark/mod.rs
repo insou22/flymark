@@ -286,20 +286,24 @@ impl TaskRunner<()> for LoadJournalTask {
         let mut submission_files = vec![];
         let mut marking_files    = vec![];
 
-        for (_index, file) in resp.files {
+        for (imark_id, file) in resp.files {
             let mut mem_file = MemFile::create("memfile", CreateOptions::new().allow_sealing(true))?;
             mem_file.write_all(file.contents.as_bytes())?;
             mem_file.add_seals(Seal::Write | Seal::Shrink | Seal::Grow)?;
 
-            submission_files.push(JournalFile::new(file.name, mem_file));
+            let imark_id_usize = str::parse::<usize>(&imark_id)?;
+
+            submission_files.push(JournalFile::new(imark_id_usize, file.name, mem_file));
         }
 
-        for (_index, file) in resp.marks {
+        for (imark_id, file) in resp.marks {
             let mut mem_file = MemFile::create("memfile", CreateOptions::new().allow_sealing(true))?;
             mem_file.write_all(file.text.as_bytes())?;
             mem_file.add_seals(Seal::Write | Seal::Shrink | Seal::Grow)?;
 
-            marking_files.push(JournalFile::new(file.name, mem_file));
+            let imark_id_usize = str::parse::<usize>(&imark_id)?;
+
+            marking_files.push(JournalFile::new(imark_id_usize, file.name, mem_file));
         }
 
         let journal_data = JournalData::new(submission_files, marking_files);
@@ -346,7 +350,7 @@ impl TaskRunner<()> for MarkJournalTask {
             }
         }
     
-        let (journal_mark_name, mut journal_mark_text) = {
+        let (imark_id, journal_mark_name, mut journal_mark_text) = {
             let mut lock = self.journal.lock().await;
             
             let mut data = lock.data_mut().expect("journal must be loaded to mark");
@@ -359,7 +363,7 @@ impl TaskRunner<()> for MarkJournalTask {
             marking_file.file_data.seek(std::io::SeekFrom::Start(0))?;
             marking_file.file_data.read_to_string(&mut text)?;
 
-            (marking_file.file_name().to_string(), text)
+            (marking_file.imark_id(), marking_file.file_name().to_string(), text)
         };
 
         #[derive(Serialize)]
@@ -394,7 +398,7 @@ impl TaskRunner<()> for MarkJournalTask {
         }
     
         body.marks.insert(
-            "1".to_string(),
+            format!("{imark_id}"),
             Mark {
                 at,
                 by,
@@ -586,13 +590,15 @@ impl JournalData {
 
 #[derive(Debug)]
 pub struct JournalFile {
+    imark_id: usize,
     file_name: String,
     file_data: MemFile,
 }
 
 impl JournalFile {
-    pub fn new(file_name: String, file_data: MemFile) -> Self {
+    pub fn new(imark_id: usize, file_name: String, file_data: MemFile) -> Self {
         Self {
+            imark_id,
             file_name,
             file_data,
         }
@@ -604,6 +610,10 @@ impl JournalFile {
 
     pub fn file_data(&self) -> &MemFile {
         &self.file_data
+    }
+
+    pub fn imark_id(&self) -> usize {
+        self.imark_id
     }
 }
 
