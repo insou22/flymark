@@ -131,17 +131,26 @@ impl<B: Backend + Send + 'static> UiPage<B> for MarkingUi<B> {
                 let list_items = app.globals().choices().choices.iter()
                     .enumerate()
                     .map(|(index, choice)| {
-                        let hotkey = HOTKEYS.chars().nth(index).unwrap_or(' ');
+                        let hotkey = {
+                            selections.from_real_index(index)
+                                .and_then(|(index, _)| HOTKEYS.chars().nth(index))
+                        };
+
+                        let hotkey_string = match hotkey {
+                            Some(hotkey) => format!("[{}] ", hotkey),
+                            None => String::new(),
+                        };
+
                         ListItem::new(Span::styled(
                             match choice {
                                 Choice::Plus (n, text) => {
-                                    format!("({hotkey}) +{n} {text}")
+                                    format!("{hotkey_string}+{n} {text}")
                                 }
                                 Choice::Minus(n, text) => {
-                                    format!("({hotkey}) -{n} {text}")
+                                    format!("{hotkey_string}-{n} {text}")
                                 }
                                 Choice::Set  (n, text) => {
-                                    format!("({hotkey}) {n} {text}")
+                                    format!("{hotkey_string}{n} {text}")
                                 }
                                 Choice::Comment(text)  => {
                                     text.to_string()

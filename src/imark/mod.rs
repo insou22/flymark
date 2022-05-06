@@ -325,7 +325,7 @@ struct MarkJournalTask {
 #[async_trait]
 impl TaskRunner<()> for MarkJournalTask {
     async fn run(self) -> Result<()> {
-        let mut mark = 0;
+        let mut mark: i32 = 0;
         let mut comments = vec![];
     
         for choice in self.choices.selections().iter()
@@ -334,20 +334,24 @@ impl TaskRunner<()> for MarkJournalTask {
         {
             match choice {
                 Choice::Plus(n, comment) => {
-                    mark += n;
+                    mark += *n as i32;
                     comments.push(format!("+{n} {comment}"));
                 }
                 Choice::Minus(n, comment) => {
-                    mark -= n;
+                    mark.saturating_sub(*n as i32);
                     comments.push(format!("-{n} {comment}"));
     
                 }
                 Choice::Set(n, comment) => {
-                    mark = *n;
+                    mark = *n as i32;
                     comments.push(format!("{n} {comment}"));
                 }
                 Choice::Comment(_)  => unreachable!(),
             }
+        }
+
+        if mark < 0 {
+            mark = 0;
         }
     
         let (imark_id, journal_mark_name, mut journal_mark_text) = {

@@ -91,9 +91,12 @@ impl ChoiceSelections {
         self.cursor = (self.cursor + self.selections.len() - 1) % self.selections.len();
     }
 
-    pub fn try_cursor_set(&mut self, new_cursor: usize) {
+    pub fn try_cursor_set(&mut self, new_cursor: usize) -> bool {
         if new_cursor < self.selections.len() {
             self.cursor = new_cursor;
+            true
+        } else {
+            false
         }
     }
 

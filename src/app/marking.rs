@@ -203,8 +203,7 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
                             }
                             KeyCode::Char(c) if HOTKEYS.contains(c) => {
                                 let char_index = HOTKEYS.find(c).expect("Must be in HOTKEYS.");
-                                if let Some((choice_index, _)) = choices.from_real_index(char_index) {
-                                    choices.try_cursor_set(choice_index);
+                                if choices.try_cursor_set(char_index) {
                                     choices.toggle_selection();
                                 }
                             }
