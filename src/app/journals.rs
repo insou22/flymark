@@ -62,10 +62,10 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppJournalList<B> {
         match event {
             Event::Key(key) => {
                 match key.code {
-                    KeyCode::Down  => {
+                    KeyCode::Down | KeyCode::Char('j') => {
                         self.current_index = (self.current_index + 1) % self.journals.len();
                     }
-                    KeyCode::Up    => {
+                    KeyCode::Up | KeyCode::Char('k')    => {
                         self.current_index = (self.current_index + self.journals.len() - 1) % self.journals.len();
                     }
                     KeyCode::Enter => {

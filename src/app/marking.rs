@@ -189,10 +189,10 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
                 match event {
                     Event::Key(key) => {
                         match key.code {
-                            KeyCode::Down  => {
+                            KeyCode::Down | KeyCode::Char('j')  => {
                                 choices.cursor_next();
                             }
-                            KeyCode::Up    => {
+                            KeyCode::Up | KeyCode::Char('k')   => {
                                 choices.cursor_prev();
                             }
                             KeyCode::Char(' ') | KeyCode::Right => {

@@ -94,11 +94,11 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppPostAuth<B> {
         match event {
             Event::Key(key) => {
                 match key.code {
-                    KeyCode::Down => {
+                    KeyCode::Down | KeyCode::Char('j') => {
                         self.current_assignment = (self.current_assignment + 1) % self.assignments.len();
                         
                     }
-                    KeyCode::Up => {
+                    KeyCode::Up | KeyCode::Char('k') => {
                         self.current_assignment = (self.current_assignment + self.assignments.len() - 1) % self.assignments.len();
                     }
                     KeyCode::Enter => {
