@@ -1,6 +1,6 @@
 use std::mem;
 
-use anyhow::Result;
+use anyhow::{Result, Context};
 use async_trait::async_trait;
 use crossterm::event::Event;
 use reqwest::Method;
@@ -82,7 +82,15 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppPreAuth<B> {
                 }
             }
             AppPreAuthState::Authenticating { zid, password, task } => {
-                if let Some(output) = task.poll()? {
+                if let Some(output) = task.poll()
+                    .with_context(||
+                        format!(
+                            "Are your credentials incorrect?\n\
+                             Is imark down?\n\
+                             Is `{}` the correct imark cgi endpoint?",
+                            self.globals.cgi_endpoint(),
+                        )
+                    )? {
                     return Ok(Some(Box::new(
                         AppPostAuth::new(
                             self.globals.clone(),
