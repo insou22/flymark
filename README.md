@@ -5,11 +5,27 @@ Super-duper-fast CLI imark client, intended for marking exams.
 
 # Installation
 
-```sh
-git clone 'https://github.com/insou22/flymark'
-cargo build --release
-sudo cp 
-```
+Make sure you have a working Rust toolchain installed (stable, latest recommended).
+
+You can install a Rust toolchain with [Rustup](https://rustup.rs/).
+
+`cargo install flymark`
+
+# Usage
+
+`flymark <scheme_file> <course> <session>`
+
+* scheme_file is the path to a file that holds the marking
+scheme. A sample scheme that displays all the capabilities
+is available in `simple_scheme.txt`.
+
+* course is the course to mark, in the format: `cs1521`.
+
+* session is the session of the course to mark, in the format: `22T1`.
+
+There are additional flags to override some of the settings,
+including allowing you to use a custom imark cgi endpoint.
+Read more with `flymark --help`
 
 ## License
 
