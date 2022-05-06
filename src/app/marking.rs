@@ -7,7 +7,7 @@ use tmux_interface::{RespawnPane, SplitWindow};
 use tokio::fs::{remove_file, symlink};
 use tui::{backend::Backend, Frame};
 
-use crate::{imark::{Globals, Authentication, Journals, JournalTag}, choice::{ChoiceSelections, Choice}, ui::{marking::MarkingUi, AppPage, UiPage}, util::{task::Task, tmux::TmuxPane}};
+use crate::{imark::{Globals, Authentication, Journals, JournalTag}, choice::{ChoiceSelections, Choice}, ui::{marking::MarkingUi, AppPage, UiPage}, util::{task::Task, tmux::TmuxPane, HOTKEYS}};
 
 use super::{assignments::{FetchJournalsOutput, FetchJournalsTask}, journals::AppJournalList};
 
@@ -200,6 +200,13 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
                             }
                             KeyCode::Char('q') => {
                                 self.state = AppMarkingState::WaitingToReturn;
+                            }
+                            KeyCode::Char(c) if HOTKEYS.contains(c) => {
+                                let char_index = HOTKEYS.find(c).expect("Must be in HOTKEYS.");
+                                if let Some((choice_index, _)) = choices.from_real_index(char_index) {
+                                    choices.try_cursor_set(choice_index);
+                                    choices.toggle_selection();
+                                }
                             }
                             KeyCode::Enter => {
                                 self.journals.queue_mark(

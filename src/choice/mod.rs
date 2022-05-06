@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 #[derive(Debug, Default)]
 pub struct Choices {
@@ -89,6 +89,12 @@ impl ChoiceSelections {
 
     pub fn cursor_prev(&mut self) {
         self.cursor = (self.cursor + self.selections.len() - 1) % self.selections.len();
+    }
+
+    pub fn try_cursor_set(&mut self, new_cursor: usize) {
+        if new_cursor < self.selections.len() {
+            self.cursor = new_cursor;
+        }
     }
 
     pub fn from_real_index(&self, real_index: usize) -> Option<(usize, &ChoiceSelection)> {
