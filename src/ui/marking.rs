@@ -93,7 +93,7 @@ impl<B: Backend + Send + 'static> UiPage<B> for MarkingUi<B> {
                                 ]
                             )
                             .split(size)
-                    ).expect("chunk split into three");
+                    ).expect("chunk split into five");
 
                 let journal_info = {
                     if let Some(journal) = app.journals().try_get(app.live_journal_tag()) {

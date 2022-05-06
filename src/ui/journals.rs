@@ -1,6 +1,6 @@
 use std::{marker::PhantomData, num::Wrapping};
 
-use tui::{Frame, backend::Backend, widgets::{ListItem, List, Block, Borders, ListState, Paragraph}, style::{Style, Color, Modifier}, layout::{Layout, Direction, Constraint}};
+use tui::{Frame, backend::Backend, widgets::{ListItem, List, Block, Borders, ListState, Paragraph}, style::{Style, Color, Modifier}, layout::{Layout, Direction, Constraint, Rect}};
 
 use crate::app::journals::AppJournalList;
 
@@ -26,11 +26,39 @@ impl<B: Backend + Send + 'static> UiPage<B> for JournalsUi<B> {
         B: Backend,
     {
         let size = frame.size();
+
+        let [filter_chunk, journals_chunk] = 
+            <[Rect; 2]>::try_from(
+                Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints(
+                        [
+                            Constraint::Length(3),
+                            Constraint::Length(size.height.saturating_sub(3)),
+                        ]
+                    )
+                    .split(size)
+            ).expect("chunk split into two");
+
+        let filter_paragraph = Paragraph::new(app.filter().value())
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Filter")
+                );
+
+        frame.set_cursor(
+            filter_chunk.x + app.filter().cursor() as u16 + 1,
+            filter_chunk.y + 1,
+        );
+
+        frame.render_widget(filter_paragraph, filter_chunk);
+        
         let mut list_items = Vec::new();
         
-        for (tag, journal) in app.journals().iter() {
+        for tag in app.journals_view().iter() {
             let (mark, provisional_mark, name) = {
-                let journal = journal.try_lock()
+                let journal = app.journals().try_get(tag)
                     .expect("while selecting a journal, there cannot be any lock contention");
 
                 (journal.meta().mark(), journal.meta().provisional_mark(), journal.meta().name().to_string())
@@ -62,8 +90,8 @@ impl<B: Backend + Send + 'static> UiPage<B> for JournalsUi<B> {
         
         let mut list_state = ListState::default();
         list_state.select(Some(app.current_index()));
-        
-        frame.render_stateful_widget(list, size, &mut list_state);
+
+        frame.render_stateful_widget(list, journals_chunk, &mut list_state);
     }
 
     fn update(&mut self) {

@@ -4,8 +4,9 @@ use anyhow::Result;
 use async_trait::async_trait;
 use crossterm::event::{Event, KeyCode};
 use tui::{backend::Backend, Frame};
+use tui_input::{Input, InputResponse, backend::crossterm as tui_input_crossterm};
 
-use crate::{imark::{Globals, Authentication, Journals}, ui::{AppPage, journals::JournalsUi, UiPage}, util::task::{Task, TaskRunner}};
+use crate::{imark::{Globals, Authentication, Journals, JournalTag}, ui::{AppPage, journals::JournalsUi, UiPage}, util::task::{Task, TaskRunner}};
 
 use super::marking::AppMarking;
 
@@ -14,18 +15,24 @@ pub struct AppJournalList<B> {
     auth: Authentication,
     assignment: String,
     journals: Journals,
+    journals_view: Vec<JournalTag>,
     current_index: usize,
+    filter: Input,
     ui: JournalsUi<B>,
 }
 
 impl<B> AppJournalList<B> {
     pub fn new(globals: Globals, auth: Authentication, assignment: String, journals: Journals) -> Self {
+        let journals_view = filter_journals(&journals, "").cloned().collect();
+
         Self {
             globals,
             auth,
             assignment,
             journals,
+            journals_view,
             current_index: 0,
+            filter: Input::default(),
             ui: JournalsUi::new(),
         }
     }
@@ -46,9 +53,35 @@ impl<B> AppJournalList<B> {
         &self.journals
     }
 
+    pub fn journals_view(&self) -> &[JournalTag] {
+        &self.journals_view
+    }
+
     pub fn current_index(&self) -> usize {
         self.current_index
     }
+    
+    pub fn filter(&self) -> &Input {
+        &self.filter
+    }
+}
+
+pub fn filter_journals<'j, 'f: 'j>(journals: &'j Journals, filter: &'f str) -> impl Iterator<Item = &'j JournalTag> {
+    journals.iter()
+        .filter(move |(tag, meta)| {
+            tag.student_id().contains(filter)
+            || if let Ok(meta) = meta.try_lock() {
+                let meta = meta.meta();
+
+                meta.name().to_uppercase().contains(&filter.to_uppercase())
+                || meta.mark().map(|m| format!("{:>5.02}", m))
+                    .or(meta.provisional_mark().map(|m| format!("{:>5.02}?", m)))
+                    .map_or(false, |mark| mark.contains(&filter))
+            } else {
+                false
+            }
+        })
+        .map(|(tag, meta)| tag)
 }
 
 #[async_trait]
@@ -62,21 +95,20 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppJournalList<B> {
         match event {
             Event::Key(key) => {
                 match key.code {
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        self.current_index = (self.current_index + 1) % self.journals.len();
+                    KeyCode::Down => {
+                        self.current_index = (self.current_index + 1) % self.journals_view.len();
                     }
-                    KeyCode::Up | KeyCode::Char('k')    => {
-                        self.current_index = (self.current_index + self.journals.len() - 1) % self.journals.len();
+                    KeyCode::Up => {
+                        self.current_index = (self.current_index + self.journals_view.len() - 1) % self.journals_view.len();
                     }
                     KeyCode::Enter => {
                         let globals    = self.globals().clone();
                         let auth       = self.auth().clone();
                         let assignment = mem::take(&mut self.assignment);
                         let journals   = mem::take(&mut self.journals);
-                        let live_journal_tag = journals.iter()
+                        let live_journal_tag = self.journals_view.iter()
                             .nth(self.current_index)
                             .expect("journal cannot just disappear")
-                            .0
                             .clone();
 
                         return Ok(Some(Box::new(
@@ -90,7 +122,19 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppJournalList<B> {
                             )
                         )));
                     }
-                    _ => {}
+                    other => {
+                        if let Some(response) = tui_input_crossterm::to_input_request(event)
+                            .and_then(|req| self.filter.handle(req)) {
+                            match response {
+                                InputResponse::StateChanged(state) if state.value => {
+                                    self.journals_view = filter_journals(&self.journals, &self.filter.value()).cloned().collect();
+                                    self.current_index = 0;
+                                }
+                                _ => {}
+                            }
+                        }
+
+                    }
                 }
             }
             _ => {}

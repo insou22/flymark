@@ -9,7 +9,7 @@ Make sure you have a working Rust toolchain installed (stable, latest recommende
 
 You can install a Rust toolchain with [Rustup](https://rustup.rs/).
 
-`cargo install flymark`
+Once you have a toolchain installed, simply run: `cargo install flymark`.
 
 # Usage
 
