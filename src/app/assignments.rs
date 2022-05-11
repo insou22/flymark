@@ -156,6 +156,7 @@ impl TaskRunner<FetchJournalsOutput> for FetchJournalsTask {
             name: String,
             provisional_mark: Option<f64>,
             mark: Option<f64>,
+            notes: Option<String>,
         }
 
         let imark_cgi_endpoint = self.globals.cgi_endpoint();
@@ -187,7 +188,8 @@ impl TaskRunner<FetchJournalsOutput> for FetchJournalsTask {
                             JournalMeta::new(
                                 submission.name,
                                 submission.provisional_mark,
-                                submission.mark
+                                submission.mark,
+                                submission.notes,
                             )
                         )
                     })

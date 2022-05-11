@@ -74,6 +74,7 @@ impl<B: Backend + Send + 'static> UiPage<B> for MarkingUi<B> {
                 let info = "Press <space> to toggle a choice\n\
                 Press <up>/<down> to select a choice\n\
                 Press <enter> to submit and move to next journal\n\
+                Press <s> to skip marking this journal\n\
                 Press <q> to return to the journal list";
 
                 let info_height = info.lines().count() as u16;
@@ -100,17 +101,24 @@ impl<B: Backend + Send + 'static> UiPage<B> for MarkingUi<B> {
                         let mark             = journal.meta().mark();
                         let provisional_mark = journal.meta().provisional_mark();
                         let name             = journal.meta().name();
+                        let notes = journal.meta().notes();
             
                         Paragraph::new(
-                            format!(
-                                "  zid   |  mark  | name\n\
-                                {} | {:6} | {}",
-                                app.live_journal_tag().student_id(),
-                                mark.map(|m| format!("{:>5.02}", m))
-                                    .or(provisional_mark.map(|m| format!("{:>5.02}?", m)))
-                                    .unwrap_or_else(|| "".to_string()),
-                                name,
-                            )
+                            {
+                                let name_len = name.len();
+
+                                format!(
+                                    "zid     | mark   | {:name_len$} | notes\n\
+                                    {} | {:6} | {} | {}",
+                                    "name",
+                                    app.live_journal_tag().student_id(),
+                                    mark.map(|m| format!("{:>5.02}", m))
+                                        .or(provisional_mark.map(|m| format!("{:>5.02}?", m)))
+                                        .unwrap_or_else(|| "".to_string()),
+                                    name,
+                                    notes.unwrap_or(""),
+                                )
+                            }
                         )
                     } else {
                         Paragraph::new(String::from("Journal loading..."))

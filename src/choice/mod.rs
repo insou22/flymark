@@ -7,9 +7,9 @@ pub struct Choices {
 
 #[derive(Debug, Clone)]
 pub enum Choice {
-    Plus (u32, String),
-    Minus(u32, String),
-    Set  (u32, String),
+    Plus (f64, String),
+    Minus(f64, String),
+    Set  (f64, String),
     Comment(String),
 }
 
@@ -143,25 +143,25 @@ pub fn parse_choices(contents: &str) -> Result<Choices> {
 
         let fallible = || {
             let choice = match (first_char, second_char) {
-                ('+', '0'..='9') => {
+                ('+', '0'..='9' | '.') => {
                     let (number, rest) = parse_number(skip_first_char(line))?;
     
                     Choice::Plus(number, rest.to_string())
                 }
-                ('-', '0'..='9') => {
+                ('-', '0'..='9' | '.') => {
                     let (number, rest) = parse_number(skip_first_char(line))?;
     
                     Choice::Minus(number, rest.to_string())
                 }
-                ('=', '0'..='9') => {
+                ('=', '0'..='9' | '.') => {
                     let (number, rest) = parse_number(skip_first_char(line))?;
     
                     Choice::Set(number, rest.to_string())
                 }
-                ('0'..='9', _) => {
+                ('0'..='9', _) | ('.', '0'..='9') => {
                     bail!("Choice file should never start with a number\n\
                            If you meant to add to the mark, use +number\n\
-                           If you meant to set the mark, use= number\n\
+                           If you meant to set the mark, use =number\n\
                            If you didn't mean either of these, you're bound to confuse markers");
                 }
                 _ => {
@@ -188,16 +188,16 @@ fn skip_first_char(line: &str) -> &str {
     }
 }
 
-fn parse_number(line: &str) -> Result<(u32, &str)> {
+fn parse_number(line: &str) -> Result<(f64, &str)> {
     let termination = line.char_indices()
-        .find(|char| !matches!(char.1, '0'..='9'));
+        .find(|char| !matches!(char.1, '0'..='9' | '.'));
 
     let (number_part, rest) = match termination {
         Some((index, _)) => (&line[..index], line[index..].trim()),
         None => (line, ""),
     };
 
-    let number = number_part.parse::<u32>()?;
+    let number = number_part.parse()?;
 
     Ok((number, rest))
 }

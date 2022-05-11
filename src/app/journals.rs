@@ -77,6 +77,7 @@ pub fn filter_journals<'j, 'f: 'j>(journals: &'j Journals, filter: &'f str) -> i
                 || meta.mark().map(|m| format!("{:>5.02}", m))
                     .or(meta.provisional_mark().map(|m| format!("{:>5.02}?", m)))
                     .map_or(false, |mark| mark.contains(&filter))
+                || meta.notes().map_or(false, |notes| notes.to_uppercase().contains(&filter.to_uppercase()))
             } else {
                 false
             }

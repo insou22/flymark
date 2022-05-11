@@ -325,7 +325,7 @@ struct MarkJournalTask {
 #[async_trait]
 impl TaskRunner<()> for MarkJournalTask {
     async fn run(self) -> Result<()> {
-        let mut mark: i32 = 0;
+        let mut mark = 0.0;
         let mut comments = vec![];
     
         for choice in self.choices.selections().iter()
@@ -334,25 +334,27 @@ impl TaskRunner<()> for MarkJournalTask {
         {
             match choice {
                 Choice::Plus(n, comment) => {
-                    mark += *n as i32;
+                    mark += *n;
                     comments.push(format!("+{n} {comment}"));
                 }
                 Choice::Minus(n, comment) => {
-                    mark.saturating_sub(*n as i32);
+                    mark -= *n;
                     comments.push(format!("-{n} {comment}"));
     
                 }
                 Choice::Set(n, comment) => {
-                    mark = *n as i32;
+                    mark = *n;
                     comments.push(format!("{n} {comment}"));
                 }
                 Choice::Comment(_)  => unreachable!(),
             }
         }
 
-        if mark < 0 {
-            mark = 0;
+        if mark < 0.0 {
+            mark = 0.0;
         }
+
+        let mark = (mark * 100.0).round() / 100.0;
     
         let (imark_id, journal_mark_name, mut journal_mark_text) = {
             let mut lock = self.journal.lock().await;
@@ -407,7 +409,7 @@ impl TaskRunner<()> for MarkJournalTask {
                 at,
                 by,
                 is_final: true,
-                mark: mark as f64,
+                mark,
                 name: journal_mark_name,
                 text: journal_mark_text,
             }
@@ -545,14 +547,16 @@ pub struct JournalMeta {
     name: String,
     provisional_mark: Option<f64>,
     mark: Option<f64>,
+    notes: Option<String>,
 }
 
 impl JournalMeta {
-    pub fn new(name: String, provisional_mark: Option<f64>, mark: Option<f64>) -> Self {
+    pub fn new(name: String, provisional_mark: Option<f64>, mark: Option<f64>, notes: Option<String>) -> Self {
         Self {
             name,
             provisional_mark,
             mark,
+            notes,
         }
     }
 
@@ -566,6 +570,10 @@ impl JournalMeta {
 
     pub fn mark(&self) -> Option<f64> {
         self.mark
+    }
+
+    pub fn notes(&self) -> Option<&str> {
+        self.notes.as_deref()
     }
 }
 

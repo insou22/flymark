@@ -57,21 +57,22 @@ impl<B: Backend + Send + 'static> UiPage<B> for JournalsUi<B> {
         let mut list_items = Vec::new();
         
         for tag in app.journals_view().iter() {
-            let (mark, provisional_mark, name) = {
+            let (mark, provisional_mark, name, notes) = {
                 let journal = app.journals().try_get(tag)
                     .expect("while selecting a journal, there cannot be any lock contention");
 
-                (journal.meta().mark(), journal.meta().provisional_mark(), journal.meta().name().to_string())
+                (journal.meta().mark(), journal.meta().provisional_mark(), journal.meta().name().to_string(), journal.meta().notes().map(str::to_string))
             };
 
             let item = ListItem::new(
                 format!(
-                    "{} | {:6} | {}",
+                    "{} | {:6} | {:30} | {}",
                     tag.student_id(),
                     mark.map(|m| format!("{:>5.02}", m))
                         .or(provisional_mark.map(|m| format!("{:>5.02}?", m)))
                         .unwrap_or_else(|| "".to_string()),
                     name,
+                    notes.unwrap_or(String::new())
                 )
             );
 

@@ -11,6 +11,8 @@ use crate::{imark::{Globals, Authentication, Journals, JournalTag}, choice::{Cho
 
 use super::{assignments::{FetchJournalsOutput, FetchJournalsTask}, journals::AppJournalList};
 
+const N_PRELOAD: usize = 5;
+
 pub struct AppMarking<B> {
     globals: Globals,
     auth: Authentication,
@@ -133,14 +135,14 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
 
                 self.state = AppMarkingState::Marking { choices: choice_selections };
 
-                let mut next_three_journals_iter = self.journals.iter();
-                let _ = next_three_journals_iter.find(|(tag, _)| *tag == &self.live_journal_tag);
+                let mut next_journals_iter = self.journals.iter();
+                let _ = next_journals_iter.find(|(tag, _)| *tag == &self.live_journal_tag);
 
-                let next_three_journals = next_three_journals_iter.take(3)
+                let next_journals = next_journals_iter.take(N_PRELOAD)
                     .map(|(tag, _)| tag.clone())
                     .collect::<Vec<_>>();
 
-                for next_journal in next_three_journals {
+                for next_journal in next_journals {
                     self.journals.queue_load(next_journal, self.globals.cgi_endpoint(), self.auth.clone());
                 }
             }
@@ -200,6 +202,32 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
                             }
                             KeyCode::Char('q') => {
                                 self.state = AppMarkingState::WaitingToReturn;
+                            }
+                            KeyCode::Char('s') => {
+                                let mut journals_iter = self.journals.iter();
+                                journals_iter.find(|(tag, _)| *tag == self.live_journal_tag());
+
+                                let next_journal = journals_iter.next();
+                                match next_journal {
+                                    Some((tag, _)) => {
+                                        let tag = tag.clone();
+                                        drop(journals_iter);
+
+                                        return Ok(Some(Box::new(
+                                            AppMarking::new(
+                                                self.globals.clone(),
+                                                self.auth.clone(),
+                                                mem::take(&mut self.assignment),
+                                                mem::take(&mut self.journals),
+                                                tag,
+                                                mem::take(&mut self.tmux_side_pane),
+                                            )
+                                        )));
+                                    }
+                                    None => {
+                                        self.state = AppMarkingState::WaitingToReturn;
+                                    }
+                                }
                             }
                             KeyCode::Char(c) if HOTKEYS.contains(c) => {
                                 let char_index = HOTKEYS.find(c).expect("Must be in HOTKEYS.");
