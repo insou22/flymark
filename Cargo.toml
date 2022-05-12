@@ -1,6 +1,6 @@
 [package]
 name = "flymark"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Zac Kologlu <z.kologlu@unsw.edu.au>", "Tom Kunc <t.kunc@unsw.edu.au>"]
 license = "MIT OR Apache-2.0"
