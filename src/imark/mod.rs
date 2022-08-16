@@ -265,7 +265,7 @@ impl TaskRunner<()> for LoadJournalTask {
         #[derive(Deserialize)]
         pub struct MarkJson {
             name: String,
-            text: String,
+            text: Option<String>,
         }
 
         let assignment   = self.tag.assignment();
@@ -297,13 +297,15 @@ impl TaskRunner<()> for LoadJournalTask {
         }
 
         for (imark_id, file) in resp.marks {
-            let mut mem_file = MemFile::create("memfile", CreateOptions::new().allow_sealing(true))?;
-            mem_file.write_all(file.text.as_bytes())?;
-            mem_file.add_seals(Seal::Write | Seal::Shrink | Seal::Grow)?;
-
-            let imark_id_usize = str::parse::<usize>(&imark_id)?;
-
-            marking_files.push(JournalFile::new(imark_id_usize, file.name, mem_file));
+            if let Some(text) = file.text {
+                let mut mem_file = MemFile::create("memfile", CreateOptions::new().allow_sealing(true))?;
+                mem_file.write_all(text.as_bytes())?;
+                mem_file.add_seals(Seal::Write | Seal::Shrink | Seal::Grow)?;
+    
+                let imark_id_usize = str::parse::<usize>(&imark_id)?;
+    
+                marking_files.push(JournalFile::new(imark_id_usize, file.name, mem_file));
+            }
         }
 
         let journal_data = JournalData::new(submission_files, marking_files);
