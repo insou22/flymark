@@ -56,6 +56,7 @@ async fn main() -> Result<()> {
     
     ui::launch(globals).await?;
 
+    println!("Thanks for using flymark!");
     Ok(())
 }
 

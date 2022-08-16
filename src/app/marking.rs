@@ -4,7 +4,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use crossterm::event::{Event, KeyCode};
 use tmux_interface::{RespawnPane, SplitWindow};
-use tokio::fs::{remove_file, symlink};
+use tokio::fs::{remove_file, symlink, read_link};
 use tui::{backend::Backend, Frame};
 
 use crate::{imark::{Globals, Authentication, Journals, JournalTag}, choice::{ChoiceSelections, Choice}, ui::{marking::MarkingUi, AppPage, UiPage}, util::{task::Task, tmux::TmuxPane, HOTKEYS}};
@@ -111,7 +111,7 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
                     let name = file.file_name();
                     let fd = file.file_data().as_raw_fd();
 
-                    if Path::exists(Path::new(name)) {
+                    if Path::exists(Path::new(name)) || read_link(name).await.is_ok() {
                         remove_file(name).await?;
                     }
 
