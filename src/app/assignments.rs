@@ -1,4 +1,4 @@
-use std::{mem, collections::BTreeMap};
+use std::{mem, collections::BTreeMap, sync::Arc};
 
 use anyhow::{anyhow, Result};
 use async_trait::async_trait;
@@ -111,7 +111,8 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppPostAuth<B> {
                                 globals,
                                 auth,
                                 assignment
-                            }
+                            },
+                            self.globals.panic_on_drop(),
                         );
 
                         self.state = AppPostAuthState::LoadingJournals { task };
@@ -173,7 +174,7 @@ impl TaskRunner<FetchJournalsOutput> for FetchJournalsTask {
             .json()
             .await?;
         
-        let mut journals = Journals::new();
+        let mut journals = Journals::new(self.globals.clone());
         
         let mut flattened_journals = resp.submissions.into_iter()
             .map(|(group_id, group)| {

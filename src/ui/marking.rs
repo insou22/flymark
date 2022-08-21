@@ -31,6 +31,7 @@ impl<B: Backend + Send + 'static> UiPage<B> for MarkingUi<B> {
             AppMarkingState::JournalReadyToQueue
             | AppMarkingState::JournalLoading
             | AppMarkingState::JournalLoaded
+            | AppMarkingState::WaitingToGoBack { .. }
             | AppMarkingState::WaitingToReturn
             | AppMarkingState::Returning { .. } => {
                 let size = frame.size();
@@ -75,6 +76,7 @@ impl<B: Backend + Send + 'static> UiPage<B> for MarkingUi<B> {
                 Press <up>/<down> to select a choice\n\
                 Press <enter> to submit and move to next journal\n\
                 Press <s> to skip marking this journal\n\
+                Press <b> to go back one journal\n\
                 Press <q> to return to the journal list";
 
                 let info_height = info.lines().count() as u16;

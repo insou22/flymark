@@ -9,24 +9,29 @@ use tokio::sync::{Mutex, oneshot, MutexGuard};
 
 use crate::{choice::{Choices, ChoiceSelections, Choice}, app::{journals::AppJournalList, marking::AppMarking}, util::task::{TaskRunner, Task}};
 
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Globals {
     inner: Arc<GlobalsInner>,
 }
 
+#[derive(Default)]
 struct GlobalsInner {
     cgi_endpoint:  String,
     pager_command: String,
     choices:       Choices,
+    preload:       usize,
+    panic_on_drop: bool,
 }
 
 impl Globals {
-    pub fn new(cgi_endpoint: String, pager_command: String, choices: Choices) -> Self {
+    pub fn new(cgi_endpoint: String, pager_command: String, choices: Choices, preload: usize, panic_on_drop: bool) -> Self {
         Self {
             inner: Arc::new(GlobalsInner {
                 cgi_endpoint,
                 pager_command,
-                choices
+                choices,
+                preload,
+                panic_on_drop,
             }),
         }
     }
@@ -41,6 +46,14 @@ impl Globals {
 
     pub fn choices(&self) -> &Choices {
         &self.inner.choices
+    }
+
+    pub fn preload(&self) -> usize {
+        self.inner.preload
+    }
+
+    pub fn panic_on_drop(&self) -> bool {
+        self.inner.panic_on_drop
     }
 }
 
@@ -79,11 +92,16 @@ pub struct Journals {
     database: HashMap<JournalTag, Arc<Mutex<Journal>>>,
     ordering: Vec<(JournalTag, JournalMeta)>,
     queue: Vec<Task<()>>,
+    globals: Globals,
 }
 
 pub struct JournalsIter<'a> {
     journals: &'a Journals,
     index: usize,
+}
+
+pub trait BidirectionalIterator: Iterator {
+    fn next_back(&mut self) -> Option<Self::Item>;
 }
 
 impl<'a> Iterator for JournalsIter<'a> {
@@ -104,16 +122,33 @@ impl<'a> Iterator for JournalsIter<'a> {
     }
 }
 
+impl<'a> BidirectionalIterator for JournalsIter<'a> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        if self.index == 0 {
+            return None;
+        }
+
+        self.index -= 1;
+
+        let (tag, _) = self.journals.ordering.get(self.index)?;
+        let journal = self.journals.database.get(tag)
+            .expect("ordering is out of sync with database");
+
+        Some((tag, journal.clone()))
+    }
+}
+
 impl Journals {
-    pub fn new() -> Self {
+    pub fn new(globals: Globals) -> Self {
         Self {
             database: HashMap::new(),
             ordering: Vec::new(),
             queue: Vec::new(),
+            globals,
         }
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (&'_ JournalTag, Arc<Mutex<Journal>>)> {
+    pub fn iter(&self) -> impl BidirectionalIterator<Item = (&'_ JournalTag, Arc<Mutex<Journal>>)> {
         JournalsIter {
             journals: self,
             index: 0,
@@ -148,6 +183,13 @@ impl Journals {
         self.database.len()
     }
 
+    pub async fn unload(&mut self, tag: &JournalTag) {
+        if let Some(journal) = self.database.get(tag) {
+            let mut journal = journal.lock().await;
+            *journal = Journal::Unloaded(UnloadedJournal::new(journal.meta().clone()));
+        }
+    }
+
     pub fn queue_load(
         &mut self,
         tag: JournalTag,
@@ -157,12 +199,15 @@ impl Journals {
         let journal = self.database.get(&tag)
             .ok_or_else(|| anyhow::anyhow!("Tried to load non-existent journal: {tag:?}"))?;
 
-        let task = Task::new(LoadJournalTask {
-            tag:          tag,
-            journal:      journal.clone(),
-            cgi_endpoint: cgi_endpoint.to_string(),
-            auth:         auth,
-        });
+        let task = Task::new(
+            LoadJournalTask {
+                tag:          tag,
+                journal:      journal.clone(),
+                cgi_endpoint: cgi_endpoint.to_string(),
+                auth:         auth,
+            },
+            self.globals.panic_on_drop(),
+        );
 
         self.queue.push(task);
 
@@ -179,13 +224,16 @@ impl Journals {
         let journal = self.database.get(&tag)
             .ok_or_else(|| anyhow::anyhow!("Tried to load non-existent journal: {tag:?}"))?;
 
-        let task = Task::new(MarkJournalTask {
-            choices:      choices,
-            journal_tag:  tag,
-            journal:      journal.clone(),
-            cgi_endpoint: cgi_endpoint.to_string(),
-            auth:         auth,
-        });
+        let task = Task::new(
+            MarkJournalTask {
+                choices:      choices,
+                journal_tag:  tag,
+                journal:      journal.clone(),
+                cgi_endpoint: cgi_endpoint.to_string(),
+                auth:         auth,
+            },
+            self.globals.panic_on_drop(),
+        );
 
         self.queue.push(task);
 
@@ -254,6 +302,7 @@ impl TaskRunner<()> for LoadJournalTask {
         pub struct SubmissionJson {
             files: BTreeMap<String, FileJson>,
             marks: BTreeMap<String, MarkJson>,
+            metadata: MetadataJson,
         }
         
         #[derive(Deserialize)]
@@ -266,6 +315,11 @@ impl TaskRunner<()> for LoadJournalTask {
         pub struct MarkJson {
             name: String,
             text: Option<String>,
+        }
+
+        #[derive(Deserialize)]
+        pub struct MetadataJson {
+            mark: Option<f64>,
         }
 
         let assignment   = self.tag.assignment();
@@ -309,6 +363,8 @@ impl TaskRunner<()> for LoadJournalTask {
         }
 
         let journal_data = JournalData::new(submission_files, marking_files);
+
+        journal.meta_mut().mark = resp.metadata.mark;
 
         *journal = Journal::Loaded(LoadedJournal::new(mem::take(journal.meta_mut()), journal_data));
 
@@ -360,7 +416,7 @@ impl TaskRunner<()> for MarkJournalTask {
     
         let (imark_id, journal_mark_name, mut journal_mark_text) = {
             let mut lock = self.journal.lock().await;
-            
+
             let mut data = lock.data_mut().expect("journal must be loaded to mark");
 
             let mut marking_file = data.marking_files.iter_mut()

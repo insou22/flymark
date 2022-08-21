@@ -6,10 +6,11 @@ use tokio::sync::oneshot::{error::TryRecvError, self};
 
 pub struct Task<T> {
     receiver: oneshot::Receiver<Result<T>>,
+    panic_on_drop: bool,
 }
 
 impl<T: Send + 'static> Task<T> {
-    pub fn new(runner: impl TaskRunner<T> + Send + 'static) -> Self {
+    pub fn new(runner: impl TaskRunner<T> + Send + 'static, panic_on_drop: bool) -> Self {
         let (sender, receiver) = oneshot::channel();
 
         tokio::spawn(async move {
@@ -19,7 +20,7 @@ impl<T: Send + 'static> Task<T> {
             }
         });
 
-        Self { receiver }
+        Self { receiver, panic_on_drop }
     }
 
     pub fn poll(&mut self) -> Result<Option<T>> {
@@ -38,7 +39,7 @@ impl<T: Send + 'static> Task<T> {
 
 impl<T> Drop for Task<T> {
     fn drop(&mut self) {
-        if !matches!(self.receiver.try_recv(), Err(TryRecvError::Closed)) {
+        if self.panic_on_drop && !matches!(self.receiver.try_recv(), Err(TryRecvError::Closed)) {
             if !thread::panicking() {
                 panic!("Dropped Task handle without waiting for task to complete");
             }

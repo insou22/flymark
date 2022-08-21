@@ -17,7 +17,7 @@ use tempfile::TempDir;
 use tokio::{process::Command, fs::File, io::AsyncReadExt};
 
 #[derive(Parser, Debug)]
-#[clap(version)]
+#[clap(version, author)]
 pub struct Args {
     /// The cgi endpoint you will use for marking (overrides the course + session args).
     /// Generally not required.
@@ -27,6 +27,16 @@ pub struct Args {
     /// Command to run the marking pager (default: tries to find bat, falls back to less)
     #[clap(short, long)]
     pager_command: Option<String>,
+
+    /// Don't panic if flymark detects potential data loss.
+    /// This is sometimes useful if you are debugging an
+    /// unrelated crash.
+    #[clap(long)]
+    ignore_lost_data: bool,
+
+    /// How many journals ahead to load in advance.
+    #[clap(long, default_value = "5")]
+    preload: usize,
 
     /// The path to the marking scheme you will use
     scheme: String,
@@ -52,7 +62,13 @@ async fn main() -> Result<()> {
     let _work_dir = move_to_work_dir()
         .context("Failed to create temporary work directory")?;
     
-    let globals = Globals::new(cgi_endpoint, pager_command, choices);
+    let globals = Globals::new(
+        cgi_endpoint,
+        pager_command,
+        choices,
+        args.preload,
+        !args.ignore_lost_data,
+    );
     
     ui::launch(globals).await?;
 
@@ -62,8 +78,7 @@ async fn main() -> Result<()> {
 
 fn get_cgi_endpoint(args: &Args) -> String {
     args.cgi_endpoint
-        .as_ref()
-        .cloned()
+        .clone()
         .unwrap_or_else(|| {
             let course  = args.course.as_str();
             let session = args.session.as_str();

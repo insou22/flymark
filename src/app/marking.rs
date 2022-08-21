@@ -7,11 +7,9 @@ use tmux_interface::{RespawnPane, SplitWindow};
 use tokio::fs::{remove_file, symlink, read_link};
 use tui::{backend::Backend, Frame};
 
-use crate::{imark::{Globals, Authentication, Journals, JournalTag}, choice::{ChoiceSelections, Choice}, ui::{marking::MarkingUi, AppPage, UiPage}, util::{task::Task, tmux::TmuxPane, HOTKEYS}};
+use crate::{imark::{Globals, Authentication, Journals, JournalTag, BidirectionalIterator}, choice::{ChoiceSelections, Choice}, ui::{marking::MarkingUi, AppPage, UiPage}, util::{task::Task, tmux::TmuxPane, HOTKEYS}};
 
 use super::{assignments::{FetchJournalsOutput, FetchJournalsTask}, journals::AppJournalList};
-
-const N_PRELOAD: usize = 5;
 
 pub struct AppMarking<B> {
     globals: Globals,
@@ -29,6 +27,7 @@ pub enum AppMarkingState {
     JournalLoading,
     JournalLoaded,
     Marking { choices: ChoiceSelections },
+    WaitingToGoBack { back: JournalTag },
     WaitingToReturn,
     Returning { task: Task<FetchJournalsOutput> },
 }
@@ -138,7 +137,7 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
                 let mut next_journals_iter = self.journals.iter();
                 let _ = next_journals_iter.find(|(tag, _)| *tag == &self.live_journal_tag);
 
-                let next_journals = next_journals_iter.take(N_PRELOAD)
+                let next_journals = next_journals_iter.take(self.globals.preload())
                     .map(|(tag, _)| tag.clone())
                     .collect::<Vec<_>>();
 
@@ -147,17 +146,37 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
                 }
             }
             AppMarkingState::Marking { .. } => {}
+            AppMarkingState::WaitingToGoBack { back } => {
+                if self.journals.scan_queue()? == 0 {
+                    // slow but safe
+                    self.journals.unload(&back).await;
+
+                    return Ok(Some(Box::new(
+                        AppMarking::new(
+                            self.globals.clone(),
+                            self.auth.clone(),
+                            mem::take(&mut self.assignment),
+                            mem::take(&mut self.journals),
+                            mem::take(back),
+                            mem::take(&mut self.tmux_side_pane),
+                        )
+                    )));
+                }
+            }
             AppMarkingState::WaitingToReturn => {
                 if self.journals.scan_queue()? == 0 {
                     let globals    = self.globals.clone();
                     let auth       = self.auth.clone();
                     let assignment = self.assignment.to_string();
 
-                    let task = Task::new(FetchJournalsTask {
-                        globals,
-                        auth,
-                        assignment,
-                    });
+                    let task = Task::new(
+                        FetchJournalsTask {
+                            globals,
+                            auth,
+                            assignment,
+                        },
+                        self.globals.panic_on_drop(),
+                    );
 
                     self.state = AppMarkingState::Returning { task };
                 }
@@ -202,6 +221,21 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
                             }
                             KeyCode::Char('q') => {
                                 self.state = AppMarkingState::WaitingToReturn;
+                            }
+                            KeyCode::Char('b') => {
+                                let mut journals_iter = self.journals.iter();
+                                journals_iter.find(|(tag, _)| *tag == self.live_journal_tag());
+                                journals_iter.next_back();
+
+                                let prev_journal = journals_iter.next_back();
+                                match prev_journal {
+                                    Some((tag, _)) => {
+                                        self.state = AppMarkingState::WaitingToGoBack { back: tag.clone() };
+                                    }
+                                    None => {
+                                        // just ignore the back input if there is no previous journal
+                                    }
+                                }
                             }
                             KeyCode::Char('s') => {
                                 let mut journals_iter = self.journals.iter();
@@ -274,7 +308,8 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
                     _ => {}
                 }
             }
-            AppMarkingState::WaitingToReturn
+            AppMarkingState::WaitingToGoBack { .. }
+            | AppMarkingState::WaitingToReturn
             | AppMarkingState::Returning { .. } => {}
         }
         

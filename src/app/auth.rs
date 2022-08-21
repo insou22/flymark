@@ -72,11 +72,14 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppPreAuth<B> {
                         self.state = AppPreAuthState::Authenticating {
                             zid: zid.to_string(),
                             password: password.to_string(),
-                            task: Task::new(AuthenticateTask::new(
-                                self.globals.cgi_endpoint().to_string(),
-                                zid,
-                                password,
-                            )),
+                            task: Task::new(
+                                AuthenticateTask::new(
+                                    self.globals.cgi_endpoint().to_string(),
+                                    zid,
+                                    password,
+                                ),
+                                self.globals.panic_on_drop(),
+                            ),
                         };
                     }
                 }
