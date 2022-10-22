@@ -21,10 +21,11 @@ struct GlobalsInner {
     choices:       Choices,
     preload:       usize,
     panic_on_drop: bool,
+    hide_names:    bool,
 }
 
 impl Globals {
-    pub fn new(cgi_endpoint: String, pager_command: String, choices: Choices, preload: usize, panic_on_drop: bool) -> Self {
+    pub fn new(cgi_endpoint: String, pager_command: String, choices: Choices, preload: usize, panic_on_drop: bool, hide_names: bool) -> Self {
         Self {
             inner: Arc::new(GlobalsInner {
                 cgi_endpoint,
@@ -32,6 +33,7 @@ impl Globals {
                 choices,
                 preload,
                 panic_on_drop,
+                hide_names,
             }),
         }
     }
@@ -54,6 +56,10 @@ impl Globals {
 
     pub fn panic_on_drop(&self) -> bool {
         self.inner.panic_on_drop
+    }
+
+    pub fn hide_names(&self) -> bool {
+        self.inner.hide_names
     }
 }
 

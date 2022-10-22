@@ -102,7 +102,11 @@ impl<B: Backend + Send + 'static> UiPage<B> for MarkingUi<B> {
                     if let Some(journal) = app.journals().try_get(app.live_journal_tag()) {
                         let mark             = journal.meta().mark();
                         let provisional_mark = journal.meta().provisional_mark();
-                        let name             = journal.meta().name();
+                        let name             = if app.globals().hide_names() {
+                            "** hidden **"
+                        } else {
+                            journal.meta().name()
+                        };
                         let notes = journal.meta().notes();
             
                         Paragraph::new(

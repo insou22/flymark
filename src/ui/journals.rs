@@ -66,13 +66,20 @@ impl<B: Backend + Send + 'static> UiPage<B> for JournalsUi<B> {
 
             let item = ListItem::new(
                 format!(
-                    "{} | {:6} | {:30} | {}",
+                    "{} | {:6} | {}",
                     tag.student_id(),
                     mark.map(|m| format!("{:>5.02}", m))
                         .or(provisional_mark.map(|m| format!("{:>5.02}?", m)))
                         .unwrap_or_else(|| "".to_string()),
-                    name,
-                    notes.unwrap_or(String::new())
+                    if app.globals().hide_names() {
+                        String::new()
+                    } else {
+                        format!(
+                            "{:30} | {}",
+                            &name,
+                            notes.unwrap_or(String::new()),
+                        )
+                    },
                 )
             );
 

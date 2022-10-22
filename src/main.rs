@@ -38,6 +38,10 @@ pub struct Args {
     #[clap(long, default_value = "5")]
     preload: usize,
 
+    /// Hide student names for increased anonymity.
+    #[clap(long)]
+    hide_names: bool,
+
     /// The path to the marking scheme you will use
     scheme: String,
 
@@ -68,6 +72,7 @@ async fn main() -> Result<()> {
         choices,
         args.preload,
         !args.ignore_lost_data,
+        args.hide_names,
     );
     
     ui::launch(globals).await?;
