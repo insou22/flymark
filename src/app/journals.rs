@@ -8,7 +8,7 @@ use tui_input::{Input, InputResponse, backend::crossterm as tui_input_crossterm}
 
 use crate::{imark::{Globals, Authentication, Journals, JournalTag}, ui::{AppPage, journals::JournalsUi, UiPage}, util::task::{Task, TaskRunner}};
 
-use super::marking::AppMarking;
+use super::marking::{AppMarking, Opened};
 
 pub struct AppJournalList<B> {
     globals: Globals,
@@ -119,8 +119,9 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppJournalList<B> {
                                 assignment,
                                 journals,
                                 live_journal_tag,
+                                Opened::Manually,
                                 None,
-                            )
+                            ).await
                         )));
                     }
                     other => {

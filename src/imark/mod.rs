@@ -274,6 +274,10 @@ impl Journals {
 
         Ok(self.queue.len())
     }
+
+    pub fn queue_size(&self) -> usize {
+        self.queue.len()
+    }
 }
 
 pub struct JournalLoadApp {
@@ -314,6 +318,7 @@ impl TaskRunner<()> for LoadJournalTask {
         if journal.is_loaded() {
             return Ok(());
         }
+        drop(journal);
 
         #[derive(Deserialize)]
         pub struct SubmissionJson {
@@ -393,6 +398,10 @@ impl TaskRunner<()> for LoadJournalTask {
 
         let journal_data = JournalData::new(submission_files, marking_files);
 
+        let mut journal = self.journal.lock().await;
+        if journal.is_loaded() {
+            return Ok(());
+        }
         journal.meta_mut().mark = resp.metadata.mark;
 
         *journal = Journal::Loaded(LoadedJournal::new(mem::take(journal.meta_mut()), journal_data));

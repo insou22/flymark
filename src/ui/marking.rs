@@ -2,7 +2,7 @@ use std::{marker::PhantomData, num::Wrapping};
 
 use tui::{Frame, backend::Backend, widgets::{ListItem, List, Block, Borders, ListState, Paragraph}, style::{Style, Color, Modifier}, layout::{Layout, Direction, Constraint, Rect}, text::Span};
 
-use crate::{app::marking::{AppMarking, AppMarkingState}, choice::Choice, util::HOTKEYS};
+use crate::{app::marking::{AppMarking, AppMarkingState, Opened}, choice::Choice, util::HOTKEYS};
 
 use super::UiPage;
 
@@ -82,8 +82,8 @@ impl<B: Backend + Send + 'static> UiPage<B> for MarkingUi<B> {
                 let info_height = info.lines().count() as u16;
                 const MARGIN: u16 = 1;
     
-                let [journal_info_chunk, _, info_chunk, _, selections_chunk] = 
-                    <[Rect; 5]>::try_from(
+                let [journal_info_chunk, _, info_chunk, _, selections_chunk, progress_chunk] = 
+                    <[Rect; 6]>::try_from(
                         Layout::default()
                             .direction(Direction::Vertical)
                             .constraints(
@@ -92,7 +92,8 @@ impl<B: Backend + Send + 'static> UiPage<B> for MarkingUi<B> {
                                     Constraint::Length(MARGIN),
                                     Constraint::Length(info_height),
                                     Constraint::Length(MARGIN),
-                                    Constraint::Length(size.height.saturating_sub(info_height)),
+                                    Constraint::Length(size.height.saturating_sub(info_height + 2 * MARGIN + 2 + 1)),
+                                    Constraint::Length(1),
                                 ]
                             )
                             .split(size)
@@ -194,6 +195,36 @@ impl<B: Backend + Send + 'static> UiPage<B> for MarkingUi<B> {
                 list_state.select(Some(selections.real_cursor()));
     
                 frame.render_stateful_widget(list, selections_chunk, &mut list_state);
+
+                let progress = {
+                    let n_journals = match app.opened() {
+                        Opened::Automatically { n_journals_till_marked: 0 } => {
+                            String::from("Final journal")
+                        }
+                        Opened::Automatically { n_journals_till_marked: 1 } => {
+                            format!("1 journal to go")
+                        }
+                        Opened::Automatically { n_journals_till_marked } => {
+                            format!("{n_journals_till_marked} journals to go")
+                        }
+                        Opened::Manually => {
+                            String::from("[MANUAL MODE]")
+                        }
+                    };
+
+                    let sync_status = {
+                        let queue_size = app.journals().queue_size();
+                        if queue_size > 0 {
+                            format!("Syncing {queue_size} journal(s){}", ".".repeat((self.ticker.0 as usize % 81) / 27 + 1))
+                        } else {
+                            String::new()
+                        }
+                    };
+
+                    format!("{n_journals} | {sync_status}")
+                };
+
+                frame.render_widget(Paragraph::new(progress), progress_chunk);
             }
         }
     }

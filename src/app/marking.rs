@@ -17,9 +17,48 @@ pub struct AppMarking<B> {
     assignment: String,
     journals: Journals,
     live_journal_tag: JournalTag,
+    opened: Opened,
     tmux_side_pane: Option<TmuxPane>,
     state: AppMarkingState,
     ui: MarkingUi<B>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Opened {
+    Automatically { n_journals_till_marked: usize },
+    Manually,
+}
+
+impl From<Opened> for Option<usize> {
+    fn from(opened: Opened) -> Self {
+        match opened {
+            Opened::Automatically { n_journals_till_marked } => Some(n_journals_till_marked),
+            Opened::Manually => None,
+        }
+    }
+}
+
+impl From<Option<usize>> for Opened {
+    fn from(option: Option<usize>) -> Self {
+        match option {
+            Some(n_journals_till_marked) => Self::Automatically { n_journals_till_marked },
+            None => Self::Manually,
+        }
+    }
+}
+
+impl Opened {
+    pub fn next(self) -> Self {
+        Option::<usize>::from(self)
+            .map(|n| n.saturating_sub(1))
+            .into()
+    }
+
+    pub fn prev(self) -> Self {
+        Option::<usize>::from(self)
+            .map(|n| n.saturating_add(1))
+            .into()
+    }
 }
 
 pub enum AppMarkingState {
@@ -33,15 +72,28 @@ pub enum AppMarkingState {
 }
 
 impl<B> AppMarking<B> {
-    pub fn new(
+    pub async fn new(
         globals: Globals,
         auth: Authentication,
         assignment: String,
         journals: Journals,
         live_journal_tag: JournalTag,
+        opened: Opened,
         tmux_side_pane: Option<TmuxPane>,
     ) -> Self {
-        let choice_selections = ChoiceSelections::new(globals.choices()); 
+        let choice_selections = ChoiceSelections::new(globals.choices());
+
+        let opened = match opened {
+            Opened::Automatically { .. } => opened,
+            Opened::Manually => {
+                let n_journals_till_marked = Self::calculate_n_journals_till_marked(opened, &journals, &live_journal_tag).await;
+                if n_journals_till_marked == 0 {
+                    opened
+                } else {
+                    Opened::Automatically { n_journals_till_marked }
+                }
+            }
+        };
 
         Self {
             globals,
@@ -49,6 +101,7 @@ impl<B> AppMarking<B> {
             assignment,
             journals,
             live_journal_tag,
+            opened,
             tmux_side_pane,
             state: AppMarkingState::JournalReadyToQueue,
             ui: MarkingUi::new(),
@@ -77,6 +130,28 @@ impl<B> AppMarking<B> {
     
     pub fn state(&self) -> &AppMarkingState {
         &self.state
+    }
+
+    pub fn opened(&self) -> Opened {
+        self.opened
+    }
+
+    async fn calculate_n_journals_till_marked(opened: Opened, journals: &Journals, live_journal_tag: &JournalTag) -> usize {
+        if let Opened::Automatically { n_journals_till_marked } = opened {
+            return n_journals_till_marked;
+        }
+        
+        let mut iter = journals.iter();
+        iter.find(|journal| journal.0 == live_journal_tag);
+
+        let mut n_journals = 0;
+
+        for journal in iter {
+            if journal.1.lock().await.meta().mark().is_some() { break; }
+            n_journals += 1;
+        }
+
+        n_journals
     }
 }
 
@@ -158,8 +233,9 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
                             mem::take(&mut self.assignment),
                             mem::take(&mut self.journals),
                             mem::take(back),
+                            self.opened.prev(),
                             mem::take(&mut self.tmux_side_pane),
-                        )
+                        ).await
                     )));
                 }
             }
@@ -196,6 +272,8 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
                 return Ok(None);
             }
         }
+
+        let n = self.journals.scan_queue()?;
 
         let event = match io {
             Some(event) => event,
@@ -238,28 +316,36 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
                                 }
                             }
                             KeyCode::Char('s') => {
-                                let mut journals_iter = self.journals.iter();
-                                journals_iter.find(|(tag, _)| *tag == self.live_journal_tag());
-
-                                let next_journal = journals_iter.next();
-                                match next_journal {
-                                    Some((tag, _)) => {
-                                        let tag = tag.clone();
-                                        drop(journals_iter);
-
-                                        return Ok(Some(Box::new(
-                                            AppMarking::new(
-                                                self.globals.clone(),
-                                                self.auth.clone(),
-                                                mem::take(&mut self.assignment),
-                                                mem::take(&mut self.journals),
-                                                tag,
-                                                mem::take(&mut self.tmux_side_pane),
-                                            )
-                                        )));
-                                    }
-                                    None => {
+                                match self.opened {
+                                    Opened::Automatically { n_journals_till_marked: 0 } => {
                                         self.state = AppMarkingState::WaitingToReturn;
+                                    }
+                                    _ => {
+                                        let mut journals_iter = self.journals.iter();
+                                        journals_iter.find(|(tag, _)| *tag == self.live_journal_tag());
+
+                                        let next_journal = journals_iter.next();
+                                        match next_journal {
+                                            Some((tag, _)) => {
+                                                let tag = tag.clone();
+                                                drop(journals_iter);
+                                                return Ok(Some(Box::new(
+                                                    AppMarking::new(
+                                                        self.globals.clone(),
+                                                        self.auth.clone(),
+                                                        mem::take(&mut self.assignment),
+                                                        mem::take(&mut self.journals),
+                                                        tag,
+                                                        self.opened.next(),
+                                                        mem::take(&mut self.tmux_side_pane),
+                                                    ).await
+                                                )));
+                                            }
+                                            None => {
+                                                // should be impossible
+                                                self.state = AppMarkingState::WaitingToReturn;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -278,28 +364,36 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
                                     self.globals.mark_name(),
                                 );
 
-                                let mut journals_iter = self.journals.iter();
-                                journals_iter.find(|(tag, _)| *tag == self.live_journal_tag());
-
-                                let next_journal = journals_iter.next();
-                                match next_journal {
-                                    Some((tag, _)) => {
-                                        let tag = tag.clone();
-                                        drop(journals_iter);
-
-                                        return Ok(Some(Box::new(
-                                            AppMarking::new(
-                                                self.globals.clone(),
-                                                self.auth.clone(),
-                                                mem::take(&mut self.assignment),
-                                                mem::take(&mut self.journals),
-                                                tag,
-                                                mem::take(&mut self.tmux_side_pane),
-                                            )
-                                        )));
-                                    }
-                                    None => {
+                                match self.opened {
+                                    Opened::Automatically { n_journals_till_marked: 0 } => {
                                         self.state = AppMarkingState::WaitingToReturn;
+                                    }
+                                    _ => {
+                                        let mut journals_iter = self.journals.iter();
+                                        journals_iter.find(|(tag, _)| *tag == self.live_journal_tag());
+        
+                                        let next_journal = journals_iter.next();
+                                        match next_journal {
+                                            Some((tag, _)) => {
+                                                let tag = tag.clone();
+                                                drop(journals_iter);
+        
+                                                return Ok(Some(Box::new(
+                                                    AppMarking::new(
+                                                        self.globals.clone(),
+                                                        self.auth.clone(),
+                                                        mem::take(&mut self.assignment),
+                                                        mem::take(&mut self.journals),
+                                                        tag,
+                                                        self.opened.next(),
+                                                        mem::take(&mut self.tmux_side_pane),
+                                                    ).await
+                                                )));
+                                            }
+                                            None => {
+                                                self.state = AppMarkingState::WaitingToReturn;
+                                            }
+                                        }
                                     }
                                 }
                             }
