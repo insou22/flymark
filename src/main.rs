@@ -28,6 +28,10 @@ pub struct Args {
     #[clap(short, long)]
     pager_command: Option<String>,
 
+    /// The name of the mark that we're marking for
+    #[clap(short, long, default_value = "performance")]
+    mark_name: String,
+
     /// Don't panic if flymark detects potential data loss.
     /// This is sometimes useful if you are debugging an
     /// unrelated crash.
@@ -69,6 +73,7 @@ async fn main() -> Result<()> {
     let globals = Globals::new(
         cgi_endpoint,
         pager_command,
+        args.mark_name,
         choices,
         args.preload,
         !args.ignore_lost_data,

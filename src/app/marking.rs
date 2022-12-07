@@ -91,7 +91,7 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
                 {
                     self.state = AppMarkingState::JournalLoaded;
                 } else if matches!(self.state, AppMarkingState::JournalReadyToQueue) {
-                    self.journals.queue_load(self.live_journal_tag.clone(), self.globals.cgi_endpoint(), self.auth.clone());
+                    self.journals.queue_load(self.live_journal_tag.clone(), self.globals.cgi_endpoint(), self.auth.clone(), self.globals.mark_name());
 
                     self.state = AppMarkingState::JournalLoading;
                 }
@@ -142,7 +142,7 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
                     .collect::<Vec<_>>();
 
                 for next_journal in next_journals {
-                    self.journals.queue_load(next_journal, self.globals.cgi_endpoint(), self.auth.clone());
+                    self.journals.queue_load(next_journal, self.globals.cgi_endpoint(), self.auth.clone(), self.globals.mark_name());
                 }
             }
             AppMarkingState::Marking { .. } => {}
@@ -275,6 +275,7 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
                                     mem::take(choices),
                                     self.globals.cgi_endpoint(),
                                     self.auth().clone(),
+                                    self.globals.mark_name(),
                                 );
 
                                 let mut journals_iter = self.journals.iter();

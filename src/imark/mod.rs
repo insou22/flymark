@@ -18,6 +18,7 @@ pub struct Globals {
 struct GlobalsInner {
     cgi_endpoint:  String,
     pager_command: String,
+    mark_name:     String,
     choices:       Choices,
     preload:       usize,
     panic_on_drop: bool,
@@ -25,11 +26,12 @@ struct GlobalsInner {
 }
 
 impl Globals {
-    pub fn new(cgi_endpoint: String, pager_command: String, choices: Choices, preload: usize, panic_on_drop: bool, hide_names: bool) -> Self {
+    pub fn new(cgi_endpoint: String, pager_command: String, mark_name: String, choices: Choices, preload: usize, panic_on_drop: bool, hide_names: bool) -> Self {
         Self {
             inner: Arc::new(GlobalsInner {
                 cgi_endpoint,
                 pager_command,
+                mark_name,
                 choices,
                 preload,
                 panic_on_drop,
@@ -44,6 +46,10 @@ impl Globals {
 
     pub fn pager_command(&self) -> &str {
         &self.inner.pager_command
+    }
+
+    pub fn mark_name(&self) -> &str {
+        &self.inner.mark_name
     }
 
     pub fn choices(&self) -> &Choices {
@@ -200,7 +206,8 @@ impl Journals {
         &mut self,
         tag: JournalTag,
         cgi_endpoint: &str,
-        auth: Authentication
+        auth: Authentication,
+        mark_name: &str,
     ) -> Result<()> {
         let journal = self.database.get(&tag)
             .ok_or_else(|| anyhow::anyhow!("Tried to load non-existent journal: {tag:?}"))?;
@@ -211,6 +218,7 @@ impl Journals {
                 journal:      journal.clone(),
                 cgi_endpoint: cgi_endpoint.to_string(),
                 auth:         auth,
+                mark_name:    mark_name.to_string(),
             },
             self.globals.panic_on_drop(),
         );
@@ -226,6 +234,7 @@ impl Journals {
         choices: ChoiceSelections,
         cgi_endpoint: &str,
         auth: Authentication,
+        mark_name: &str,
     ) -> Result<()> {
         let journal = self.database.get(&tag)
             .ok_or_else(|| anyhow::anyhow!("Tried to load non-existent journal: {tag:?}"))?;
@@ -237,6 +246,7 @@ impl Journals {
                 journal:      journal.clone(),
                 cgi_endpoint: cgi_endpoint.to_string(),
                 auth:         auth,
+                mark_name:    mark_name.to_string(),
             },
             self.globals.panic_on_drop(),
         );
@@ -294,6 +304,7 @@ struct LoadJournalTask {
     journal: Arc<Mutex<Journal>>,
     cgi_endpoint: String,
     auth: Authentication,
+    mark_name: String,
 }
 
 #[async_trait]
@@ -368,6 +379,18 @@ impl TaskRunner<()> for LoadJournalTask {
             }
         }
 
+        if !marking_files.iter().any(|file| file.file_name() == &self.mark_name) {
+            let mut mem_file = MemFile::create("memfile", CreateOptions::new().allow_sealing(true))?;
+            mem_file.add_seals(Seal::Write | Seal::Shrink | Seal::Grow)?;
+
+            let imark_id_usize = marking_files.iter()
+                .map(JournalFile::imark_id)
+                .max()
+                .unwrap_or(0) + 1;
+
+            marking_files.push(JournalFile::new(imark_id_usize, self.mark_name.to_string(), mem_file));
+        }
+
         let journal_data = JournalData::new(submission_files, marking_files);
 
         journal.meta_mut().mark = resp.metadata.mark;
@@ -383,7 +406,8 @@ struct MarkJournalTask {
     journal_tag:  JournalTag,
     journal:      Arc<Mutex<Journal>>,
     cgi_endpoint: String,
-    auth:         Authentication
+    auth:         Authentication,
+    mark_name:    String,
 }
 
 #[async_trait]
@@ -426,8 +450,8 @@ impl TaskRunner<()> for MarkJournalTask {
             let mut data = lock.data_mut().expect("journal must be loaded to mark");
 
             let mut marking_file = data.marking_files.iter_mut()
-                .find(|file| file.file_name() == "performance")
-                .expect("performance mark must exist");
+                .find(|file| file.file_name() == &self.mark_name)
+                .unwrap_or_else(|| panic!("{} mark always exists", self.mark_name));
 
             let mut text = String::new();
             marking_file.file_data.seek(std::io::SeekFrom::Start(0))?;
