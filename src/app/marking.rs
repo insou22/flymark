@@ -2,7 +2,7 @@ use std::{process, path::Path, os::unix::prelude::AsRawFd, mem};
 
 use anyhow::Result;
 use async_trait::async_trait;
-use crossterm::event::{Event, KeyCode};
+use crossterm::event::{Event, KeyCode, KeyModifiers};
 use tmux_interface::{RespawnPane, SplitWindow};
 use tokio::fs::{remove_file, symlink, read_link};
 use tui::{backend::Backend, Frame};
@@ -287,20 +287,20 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
             AppMarkingState::Marking { choices } => {
                 match event {
                     Event::Key(key) => {
-                        match key.code {
-                            KeyCode::Down | KeyCode::Char('j')  => {
+                        match (key.modifiers, key.code) {
+                            (KeyModifiers::NONE, KeyCode::Down | KeyCode::Char('j'))  => {
                                 choices.cursor_next();
                             }
-                            KeyCode::Up | KeyCode::Char('k')   => {
+                            (KeyModifiers::NONE, KeyCode::Up | KeyCode::Char('k'))   => {
                                 choices.cursor_prev();
                             }
-                            KeyCode::Char(' ') | KeyCode::Right => {
+                            (KeyModifiers::NONE, KeyCode::Char(' ') | KeyCode::Right) => {
                                 choices.toggle_selection();
                             }
-                            KeyCode::Char('q') => {
+                            (KeyModifiers::NONE, KeyCode::Char('q')) => {
                                 self.state = AppMarkingState::WaitingToReturn;
                             }
-                            KeyCode::Char('b') => {
+                            (KeyModifiers::NONE, KeyCode::Char('b')) => {
                                 let mut journals_iter = self.journals.iter();
                                 journals_iter.find(|(tag, _)| *tag == self.live_journal_tag());
                                 journals_iter.next_back();
@@ -315,7 +315,7 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
                                     }
                                 }
                             }
-                            KeyCode::Char('s') => {
+                            (KeyModifiers::NONE, KeyCode::Char('s')) => {
                                 match self.opened {
                                     Opened::Automatically { n_journals_till_marked: 0 } => {
                                         self.state = AppMarkingState::WaitingToReturn;
@@ -349,13 +349,13 @@ impl<B: Backend + Send + 'static> AppPage<B> for AppMarking<B> {
                                     }
                                 }
                             }
-                            KeyCode::Char(c) if HOTKEYS.contains(c) => {
+                            (KeyModifiers::NONE, KeyCode::Char(c)) if HOTKEYS.contains(c) => {
                                 let char_index = HOTKEYS.find(c).expect("Must be in HOTKEYS.");
                                 if choices.try_cursor_set(char_index) {
                                     choices.toggle_selection();
                                 }
                             }
-                            KeyCode::Enter => {
+                            (KeyModifiers::NONE, KeyCode::Enter) | (KeyModifiers::CONTROL, KeyCode::Char('j')) => {
                                 self.journals.queue_mark(
                                     self.live_journal_tag.clone(),
                                     mem::take(choices),
